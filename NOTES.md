@@ -41,7 +41,7 @@ Check items off here as they're done. Keep this in sync each session.
 - [x] ESP32 firmware flashed with MicroPython (ESP32-WROOM-32, `ESP32_GENERIC` build, via `esptool`)
 - [x] VSCode set up for device dev (MicroPico extension, confirmed working)
 - [x] **Step 0** — DHT-22 wired (GPIO 4, 3.3V) and read successfully from `main.py` on-device
-- [ ] **Step 1** — Bare Express + TS, one `GET /health` — get the dev loop and tsconfig working
+- [x] **Step 1** — Bare Express + TS, one `GET /health` — get the dev loop and tsconfig working
 - [ ] **Step 2** — `POST /api/readings` + `GET /api/readings`, in-memory array — test with curl
 - [ ] **Step 3** — Python fake sensor on the laptop — decouples "is the server right?" from "is the ESP32 right?"
 - [ ] **Step 4** — ESP32 posting for real
@@ -60,6 +60,10 @@ Check items off here as they're done. Keep this in sync each session.
 - `typescript`, `@types/node`, `@types/express`
 - `tsx` to run TS directly with a watch mode (simpler than the older `ts-node-dev`).
   Node 22+ can run TS natively too, but tsx is less fussy.
+- **Dropped `nodemon`.** It doesn't understand `.ts` on its own — running it
+  required `nodemon --exec tsx ...`, which is two watchers layered for no benefit
+  over just `tsx watch WebServer/index.ts` directly. `dev` script simplified to
+  the latter; one less dependency, one less thing that can drift out of sync.
 
 ### Concepts, roughly in the order they bite
 - **Middleware** — a function `(req, res, next)` running in registration order.
@@ -281,22 +285,68 @@ ESP32 — it can be powered from a GPIO pin and cut during sleep.
 
 ---
 
-## 8. Data model note
+## 8. Data model — decision: wide row
 
-Once the INA219 joins, a reading grows from `{temp, humidity}` to roughly
-`{temp, humidity, bus_voltage, current_ma, power_mw}`.
+**Decided: wide row**, one row per reading, one column per metric.
 
-**Design the schema for that at step 2**, rather than hardcoding two fields and
-rewriting the API and SQLite table later. Two approaches to weigh:
+```sql
+CREATE TABLE readings (
+  id INTEGER PRIMARY KEY,
+  timestamp INTEGER NOT NULL,
+  temperature REAL,
+  humidity REAL
+);
+```
 
-- A **wide row** with nullable columns — simple, easy to query, needs a migration
-  per new metric
-- A **narrow `(device_id, metric, value, timestamp)` table** — add sensors freely
-  with no migrations, slightly more work to query and chart
+Simple queries, charts directly off a row. When the INA219 joins later, add
+nullable columns (`voltage`, `current_ma`, `power_mw`) — a small migration at
+that point, judged an acceptable tradeoff for staying simple now.
+
+(Considered and rejected for now: a narrow `(device_id, metric, value,
+timestamp)` table — adds sensors with zero schema changes, but needs a
+filter+pivot to chart, more complexity than needed while there's only one
+device.)
+
+The in-memory array from step 2 should mirror this shape —
+`{ timestamp, temperature, humidity }` per entry — so the eventual swap to
+SQLite (step 6) is a storage-layer swap, not a reshape.
 
 ---
 
-## 9. Progress log
+## 9. Database & visualization libraries
+
+Decided for step 6 (DB) and step 5 (charts):
+
+- **`better-sqlite3`** — single file, synchronous API (no `await` needed for
+  local-file DB calls, unlike a networked DB). Node 22 also ships an
+  experimental built-in `node:sqlite`, but `better-sqlite3` has far more
+  tutorials/community for when something goes wrong — stick with it for now.
+- **Raw SQL, no ORM** — prepared statements via `better-sqlite3`
+  (`db.prepare('INSERT INTO readings ...').run(...)`). Prisma is overkill at
+  this scale (codegen, its own schema DSL, migration engine). Drizzle is a
+  reasonable *later* upgrade if the schema grows and hand-typing query results
+  gets old — not needed to start.
+- **No pandas-equivalent needed.** Danfo.js and Arquero exist (Arquero is the
+  better-maintained of the two) but SQL aggregate queries (`GROUP BY`,
+  `AVG()`, `strftime()` for time bucketing) do the same job *inside* SQLite,
+  before data ever reaches JS — simpler and more efficient at this scale.
+  Revisit only if a reshaping need comes up that SQL is genuinely awkward at.
+- **Chart.js** for the graphs — canvas-based, drops into the static HTML page
+  via a CDN `<script>` tag, no build step, standard choice for time-series line
+  charts. (`uPlot` is the fallback if point counts ever get large enough that
+  Chart.js gets sluggish — not a concern at this project's scale.)
+
+### Operational notes ("living with the DB")
+- DB file lives at e.g. `WebServer/data/readings.db` — **add to `.gitignore`**,
+  same reasoning as `node_modules`: binary, constantly-changing, not source.
+- Open **one connection at server startup**, reuse it for every request — no
+  connection pool needed, it's just a file handle (unlike Postgres/MySQL).
+- No formal migration tooling yet — `CREATE TABLE IF NOT EXISTS ...` run once
+  at startup is enough until the schema is actually changing under you.
+
+---
+
+## 10. Progress log
 
 Short dated entries — what got done, anything unexpected. Detailed how-tos live
 in the sections above; this is just a timeline.
@@ -304,3 +354,23 @@ in the sections above; this is just a timeline.
 - **2026-08-28** — Flashed ESP32-WROOM-32 with MicroPython via esptool. Set up
   VSCode + MicroPico extension for on-device dev (no Thonny). Wired DHT-22 to
   GPIO 4 / 3.3V, confirmed working temperature/humidity reads from `main.py`.
+- **2026-08-29** — Set up Express + TS project in `WebServer/`, using `tsx` (not
+  nodemon alone — nodemon can't execute `.ts` by itself, needs `--exec tsx`) and
+  `tsc --init` for `tsconfig.json`. `GET /health` route confirmed working via
+  curl. Git repo initialized and pushed to GitHub (private).
+  - **Gotcha hit:** `dev` script in `package.json` must point at the real
+    entry file path (`WebServer/index.ts`), not a placeholder like `src/index.ts`
+    — nodemon/tsx fail with `ERR_MODULE_NOT_FOUND` if the script and actual file
+    location drift apart. Worth double-checking after moving/renaming files.
+  - Switched `dev` script from `nodemon --exec tsx ...` to plain `tsx watch ...`,
+    dropped the `nodemon` dependency. See section 3.
+  - **`EADDRINUSE` isn't usually a real bug** — it almost always means a dev
+    server from an earlier terminal (yours, or a test one) is still holding the
+    port. Check `Get-NetTCPConnection -LocalPort <port>` for the PID before
+    assuming the code is broken.
+  - Started step 2: added `POST /api/readings` and `GET /api/readings` route
+    stubs. Caught a bug before it caused confusion — `app.get("api/readings", ...)`
+    was missing its leading slash; Express route paths must start with `/`.
+  - Decided DB/viz stack ahead of steps 5–6: `better-sqlite3` + raw SQL (no
+    ORM) + Chart.js. Decided data model: **wide row**, not narrow
+    metric-per-row. See sections 8–9.
