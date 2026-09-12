@@ -42,9 +42,14 @@ Check items off here as they're done. Keep this in sync each session.
 - [x] VSCode set up for device dev (MicroPico extension, confirmed working)
 - [x] **Step 0** — DHT-22 wired (GPIO 4, 3.3V) and read successfully from `main.py` on-device
 - [x] **Step 1** — Bare Express + TS, one `GET /health` — get the dev loop and tsconfig working
-- [ ] **Step 2** — `POST /api/readings` + `GET /api/readings`, in-memory array — test with curl
-- [ ] **Step 3** — Python fake sensor on the laptop — decouples "is the server right?" from "is the ESP32 right?"
-- [ ] **Step 4** — ESP32 posting for real
+- [x] **Step 2** — `POST /api/readings` + `GET /api/readings`, in-memory array — test with curl
+- [ ] **Step 3 (deferred, optional)** — Python fake sensor on the laptop. Originally
+      meant to decouple "is the server right?" from "is the ESP32 right?", but
+      both are already independently verified (sensor reads clean from the REPL,
+      Express round-trips via curl) — so skipping straight to real hardware.
+      Worth revisiting later for bulk test data or iterating without the board
+      nearby, just not a gate anymore.
+- [x] **Step 4** — ESP32 posting for real (doing this next, ahead of step 3)
 - [ ] **Step 5** — Static page: table → Chart.js
 - [ ] **Step 6** — Swap array for SQLite
 - [ ] **Step 7** — Replace polling with SSE
@@ -105,6 +110,29 @@ A shared secret in a request header is sufficient auth for a LAN project.
 3. **Thonny** is the friendliest way in — REPL, device file browser, handles the
    COM port. `mpremote` is the CLI equivalent later.
 
+### Switched tooling: MicroPico → mpremote
+MicroPico (VSCode extension) got unreliable, so switched to `mpremote` CLI
+directly — same tool the extension likely wraps under the hood, minus the
+flakiness layered on top.
+```bash
+pip install mpremote
+mpremote connect list                        # find the COM port (CH340/wch.cn vendor ID = ESP32)
+mpremote connect COM4 run ESP/main.py        # run without installing — good for testing
+mpremote connect COM4 cp ESP/main.py :main.py    # install onto device (persists across reboots)
+mpremote connect COM4                        # interactive REPL, Ctrl+] to exit
+mpremote connect COM4 fs ls                  # list files actually on the device
+```
+**Gotcha:** `mpremote run <file>` only executes that one file — it does *not*
+also upload other local files it imports (like `secrets.py`). Those have to be
+`cp`'d onto the device separately first, or the run fails with
+`ImportError: no module named 'secrets'` even though the file exists locally
+right next to it. Device filesystem and local project folder are separate; this
+tripped us up on first run.
+
+The `pip install`ed `mpremote.exe` didn't land on `PATH` automatically — added
+`...\Python314\Scripts` to user `PATH` so plain `mpremote` works in new
+terminals (didn't apply retroactively to already-open ones).
+
 ### Step 0: verify the sensor from the REPL
 ```python
 from machine import Pin
@@ -139,6 +167,26 @@ and output.
 ### Wiring
 - 3.3V (not 5V) on ESP32
 - 10kΩ pull-up between data and VCC — most breakout boards have it, bare sensors don't
+
+### VSCode editor support for MicroPython imports (cosmetic, not functional)
+Pylance can't resolve `machine`/`dht`/`network`/`urequests` by default — they're
+firmware-builtin, not real pip packages, so imports show as unresolved and lose
+autocomplete/highlighting. **This never affects actual execution** — MicroPico
+talks to the device directly, separate from Pylance's static analysis.
+
+Fix: `pip install -U micropython-esp32-stubs` (lands `.pyi` stub files loose in
+that Python's site-packages), then point Pylance at that folder via
+`.vscode/settings.json`:
+```json
+{
+  "python.analysis.extraPaths": ["<path to that site-packages dir>"],
+  "editor.semanticHighlighting.enabled": true
+}
+```
+Reload window after creating/editing this file — Pylance caches analysis and
+won't pick it up otherwise. Dot-autocomplete working is the real confirmation
+it's resolved; full syntax coloring is theme-dependent and not worth chasing
+further if completion already works.
 
 ---
 
@@ -374,3 +422,24 @@ in the sections above; this is just a timeline.
   - Decided DB/viz stack ahead of steps 5–6: `better-sqlite3` + raw SQL (no
     ORM) + Chart.js. Decided data model: **wide row**, not narrow
     metric-per-row. See sections 8–9.
+  - Progress check-in: fixed the missing-slash bug. `npm install`ed
+    `better-sqlite3`/`@types/better-sqlite3` already (ahead of step 6, fine).
+    Step 2 still needs: `express.json()` middleware (not yet added — `req.body`
+    will be `undefined` without it), a `Reading` type, the in-memory array
+    itself, and real `POST`/`GET` logic (currently a hardcoded string and an
+    empty handler that never responds).
+  - **Step 2 completed.** Verified round-trip with curl: POST stores + stamps
+    timestamp server-side, GET returns the array, empty array on fresh start.
+    (Hit a red herring while testing — a zombie `tsx` process from an earlier
+    test survived a `kill` on its parent PID and kept answering with stale
+    data. `kill $PID` on a backgrounded `npx ...` doesn't reliably kill the
+    child process it spawns; had to `Stop-Process` the actual PID bound to the
+    port instead. Not a bug in the app code.)
+- **2026-09-12** — **Step 4 completed.** Switched from MicroPico to `mpremote`
+  CLI (see section 4). Fixed `connect_wifi()` never being called (defined but
+  unused — same class of bug as before). Confirmed Windows Firewall already
+  allowed Node inbound on both network profiles — no config needed. Ran the
+  real ESP32 + DHT-22 end to end: connected to WiFi, read the sensor, POSTed to
+  the Express server, got `201` back, confirmed the readings landed via
+  `GET /api/readings`. Installed `main.py`/`secrets.py` onto the device so it
+  now runs standalone on power-up, no laptop tether required.
