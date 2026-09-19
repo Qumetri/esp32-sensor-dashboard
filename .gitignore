@@ -1,3 +1,4 @@
 node_modules/
 .env
 ESP/secrets.py
+WebServer/data/

@@ -50,10 +50,15 @@ Check items off here as they're done. Keep this in sync each session.
       Worth revisiting later for bulk test data or iterating without the board
       nearby, just not a gate anymore.
 - [x] **Step 4** — ESP32 posting for real (doing this next, ahead of step 3)
-- [ ] **Step 5** — Static page: table → Chart.js
-- [ ] **Step 6** — Swap array for SQLite
+- [x] **Step 6** — Swap array for SQLite *(reordered: doing this before step 5, so
+      chart work isn't built on data that vanishes on every `tsx watch` restart)*
+- [x] **Step 6b** — Split `db` into its own module, keep `index.ts` thin
+- [x] **Step 8a** — zod validation on the POST body
+- [ ] **Step 8b** — env config: port + DB path via `node --env-file=.env` (no dotenv dep needed on Node 22)
+- [ ] **Step 8c** — Prettier (format on save)
+- [ ] **Step 8d** — A few `vitest` + `supertest` route tests — mainly a safety net for the SQLite refactor
+- [x] **Step 5** — Static page → Chart.js (skipped the intermediate table stage)
 - [ ] **Step 7** — Replace polling with SSE
-- [ ] **Step 8** — Polish: zod validation, error middleware, auth header, config
 - [ ] Later — INA219 current monitoring
 - [ ] Later — 18650 battery power + deep sleep restructure
 
@@ -84,6 +89,23 @@ Check items off here as they're done. Keep this in sync each session.
   The arity is how Express detects it.
 - **Static files** — `express.static()`. If Express serves the HTML page, page and
   API share an origin and CORS never comes up. Serve them separately and it will.
+
+### Migrated to ESM (Sept 2026)
+Project was CommonJS, which forced the awkward `import Express = require("express")`
+syntax and would have made a `db.ts` module painful (`export =` allows only one
+export per file). Fixed by adding `"type": "module"` to `package.json` — one line.
+
+Now uses standard `import express from "express"`, which is what every modern
+tutorial/example shows.
+
+**ESM gotcha:** relative imports need a **`.js` extension**, even though the
+files are `.ts`:
+```ts
+import { addReading } from "./db.js"   // correct — yes, .js
+import { addReading } from "./db"      // fails at runtime
+```
+Looks wrong, is correct — the extension refers to the *output* file. Confuses
+everyone once.
 
 ### Gotcha: Express 5 vs Express 4
 `npm i express` now installs **Express 5**, but most tutorials and StackOverflow
@@ -384,6 +406,33 @@ Decided for step 6 (DB) and step 5 (charts):
   charts. (`uPlot` is the fallback if point counts ever get large enough that
   Chart.js gets sluggish — not a concern at this project's scale.)
 
+### Market context (as of Sept 2026) — what industry does vs. what we chose
+
+Project scope is deliberate: solo, personal, not scaling, backend-focused.
+Choosing the simpler option *knowingly* where it differs from industry norm.
+
+| Area | Industry standard | Ours | Why deviating is fine here |
+|---|---|---|---|
+| Framework | Express 5 still most-used; **Fastify** / **Hono** where new projects increasingly start | Express 5 | The "boring default" — most existing code uses it, transfers best |
+| DB access | **Drizzle** for new TS projects; Prisma the heavier incumbent | Raw SQL + `better-sqlite3` | Actually learn SQL. Drizzle is a clean upgrade later |
+| SQLite | Genuinely production-respectable now (Turso, Litestream, LiteFS) | SQLite | Not a compromise anymore — just correct |
+| Validation | **zod** dominant (Valibot the lighter challenger) | zod | Keeping — cheap and universal |
+| Testing | **vitest** has displaced jest; `supertest` for HTTP | A few route tests | Keeping a small version |
+| Logging | `pino` structured JSON | `console.log` | pino exists for log *aggregation*; no aggregator here, no value |
+| Frontend | React + Vite + Recharts for dashboards; **EJS is legacy, don't** | Static HTML + `fetch` + Chart.js | Backend is the learning focus; frontend deliberately minimal |
+| Runtime | Node still default; Bun/Deno real but minority. Node 22+ built-ins (`--env-file`, `node:sqlite`, `node:test`) shrinking dep lists | Node 22 | Already current |
+
+**Deliberately skipped:** React, pino, Docker, CI, ORM. ESLint optional for solo
+work — TypeScript already catches most of what it would.
+
+**Worth knowing:** for sensor telemetry specifically, many real teams wouldn't
+hand-build a dashboard at all — they'd push into InfluxDB/TimescaleDB and point
+**Grafana** at it. That's the genuine path of least resistance in industry for
+this exact problem domain; it just teaches ops rather than programming.
+
+Also notable: we're on **TypeScript 7**, the new Go-based native compiler port —
+very recent, a real ecosystem shift.
+
 ### Operational notes ("living with the DB")
 - DB file lives at e.g. `WebServer/data/readings.db` — **add to `.gitignore`**,
   same reasoning as `node_modules`: binary, constantly-changing, not source.
@@ -443,3 +492,88 @@ in the sections above; this is just a timeline.
   the Express server, got `201` back, confirmed the readings landed via
   `GET /api/readings`. Installed `main.py`/`secrets.py` onto the device so it
   now runs standalone on power-up, no laptop tether required.
+- **2026-09-13** — Decided project direction: backend-focused, deliberately
+  simple, frontend minimal. Logged market context in section 9 (what industry
+  does vs. what we chose, and why each deviation is fine at this scale).
+  Migrated project to ESM (see section 3).
+  **Step 6 + 6b completed:** `WebServer/db.ts` owns the storage layer —
+  connection, `CREATE TABLE IF NOT EXISTS` at startup, prepared statements, and
+  `addReading`/`getReadings` exports. `index.ts` route handlers barely changed,
+  since the in-memory array was already shaped to match the schema.
+  Verified persistence by POSTing, killing the process, restarting, and
+  confirming rows survived.
+  - **Gotcha:** importing `Reading` from `db.ts` while the old local
+    `interface Reading` was still in `index.ts` → `TS2440: Import declaration
+    conflicts with local declaration`. Delete the local copy when moving a type
+    into a module.
+  - **Gotcha:** used `"Webserver/data"` (lowercase `s`) vs the real `WebServer/`
+    folder. Windows is case-insensitive so it worked silently; Linux would
+    break. Worth watching if this ever moves to the MacBook/CI.
+- **2026-09-16** — **Steps 8a + 5 completed.**
+  **zod validation:** `ReadingInput` schema validates the POST body with
+  `safeParse` → `400` + `error.issues` on failure, `201` on success. Schema
+  covers the DHT-22's *physical* ranges (temp -40..80, humidity 0..100), not
+  just types — so `humidity: 150` is rejected even though it's a valid number.
+  Demonstrated the gap first: pre-validation, `{"temperature":"hello"}` returned
+  `201` and SQLite stored the string in a `REAL` column (SQLite uses *type
+  affinity* — declared column types are hints, not constraints; it stores what
+  it can't convert as-is). That bad row has been deleted.
+  - Schema deliberately describes the *incoming payload only* (no `timestamp`)
+    — the server stamps time, clients don't get to. Stored shape ≠ accepted shape.
+  - `safeParse` not `parse`: invalid client input is expected, deserves a `400`,
+    not a thrown exception.
+  - Result is a discriminated union — after the `!parsed.success` guard, TS
+    knows `parsed.data` is `{temperature: number, humidity: number}`. Runtime
+    check and compile-time type agree because one produced the other.
+    (`z.infer<typeof Schema>` derives the type if you need it by name.)
+  - **Gotcha:** wrote `const ReadingInput: z.ZodObject({...})` — two bugs, `:`
+    instead of `=`, and `z.ZodObject` (the *type*) instead of `z.object()` (the
+    *factory function*). Produced `TS1005` on line 7, but the editor squiggled
+    line 26 — a **syntax** error means the parser gave up, so reported positions
+    after it are guesswork. Always fix the first error first.
+  **Frontend:** `WebServer/public/index.html` — Chart.js 4 via CDN (UMD build,
+  global `Chart`, no bundler), dual Y-axis line chart (temp left, humidity
+  right — different units/ranges would flatten each other on a shared axis),
+  stat tiles, 5s polling via `setInterval` + `fetch`. Served by
+  `app.use(express.static("WebServer/public"))`, so page and API share an
+  origin and CORS never comes up.
+  - Charts only the last `MAX_POINTS = 100` client-side. Proper fix later is a
+    `GET /api/readings?limit=100` param so the whole table isn't shipped every
+    5 seconds.
+  - Also deleted the dead `const readings: Reading[] = []` from `index.ts` —
+    leftover from before SQLite.
+- **2026-09-18** — **Dashboard rebuilt** with separate per-metric charts, four
+  time ranges, and real statistics. Stayed vanilla (no React) — see reasoning
+  below.
+  **New endpoint `GET /api/series?range=15m|1h|1d|1w`** returning bucketed
+  points + summary stats. `range` validated with `z.enum().default("1h")`.
+  - **Why this is backend work, not frontend work:** at 2s posting intervals a
+    1-week range is ~300k rows. Shipping those to a browser to draw a 900px
+    chart is the actual problem, and no frontend framework helps. SQL
+    aggregation does: 1d now collapses ~22k rows → 63 points, 1w ~35k → 31.
+  - Bucket sizes chosen per range to land on ~60-170 points: 15m/15s, 1h/1min,
+    1d/15min, 1w/1h.
+  - Stats computed **in SQL** (`COUNT/MIN/MAX/AVG`), never by loading rows — so
+    cost is flat whether the range holds 400 rows or 400,000. SQLite has no
+    `stddev`, so `AVG(x*x)` is selected and variance derived as E[x²] - E[x]²
+    with the square root taken in JS.
+  - Added `CREATE INDEX idx_readings_timestamp` — every range query filters and
+    sorts on `timestamp`; without it SQLite scans the whole table each time.
+  - **Serious gotcha (silent, plausible-looking wrong answer):**
+    `(timestamp / ?) * ?` did **no bucketing at all**. better-sqlite3 binds JS
+    numbers as **REAL** (JS has only doubles), so the division was
+    floating-point — `1789715032236 / 15000 = 119314335.4824` — giving every row
+    a unique fractional bucket, so `GROUP BY` grouped nothing and returned one
+    bucket per row. The endpoint looked fine; only the bucket-count-equals-row-
+    count tell gave it away. Fix: `CAST(timestamp / ? AS INTEGER) * ?`.
+    Lesson: check the *numbers*, not just the status code.
+  **Frontend:** separate temperature and humidity charts, each showing avg line
+  + min/max band per bucket (band preserves volatility an average would hide),
+  range tabs, per-metric min/avg/max/stddev/change, plus dew point (Magnus
+  formula), sample rate, coverage %, bucket resolution, and a liveness dot
+  (live / stale / offline based on newest reading age — tells you the sensor
+  died rather than showing a flat line).
+  - **Deliberately no React/Vite**, despite it being offered: the page is four
+    buttons and two charts. A framework would add a second `package.json`, a
+    build step and a dev-server proxy for no gain, against a stated preference
+    for backend focus. Revisit if the UI grows real state.
