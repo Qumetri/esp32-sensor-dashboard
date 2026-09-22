@@ -1,4 +1,5 @@
 import express from "express";
+import os from "node:os"
 import {
     addReading,
     getReadings,
@@ -11,8 +12,27 @@ import {
 } from "./db.js";
 import z from "zod"
 const app = express()
+const PORT = Number(process.env.PORT) || 3001
+
 app.use(express.json())
 app.use(express.static("WebServer/public"))
+
+app.use((req, res, next) => {
+    const start = Date.now()
+    res.on("finish", () => {
+        console.log(`${new Date().toLocaleTimeString()}  ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - start}ms)`)
+    })
+    next()
+})
+
+/** Non-internal IPv4 addresses this machine is reachable at on the LAN — this is
+ * the address the ESP32 needs in SERVER_URL, and it changes across networks. */
+function lanAddresses(): string[] {
+    return Object.values(os.networkInterfaces())
+        .flat()
+        .filter((i): i is os.NetworkInterfaceInfo => !!i && i.family === "IPv4" && !i.internal)
+        .map(i => i.address)
+}
 
 const ReadingInput = z.object({
     temperature: z.number().min(-40).max(80),
@@ -142,4 +162,12 @@ app.get("/api/series", (req, res) => {
     })
 })
 
-app.listen(3001)
+app.listen(PORT, () => {
+    console.log(`\nSensor dashboard listening on port ${PORT}\n`)
+    console.log(`  Local:    http://localhost:${PORT}`)
+    for (const addr of lanAddresses()) {
+        console.log(`  Network:  http://${addr}:${PORT}  (use this in the ESP32's SERVER_URL)`)
+    }
+    console.log(`  Health:   http://localhost:${PORT}/health`)
+    console.log(`  Started:  ${new Date().toLocaleString()}\n`)
+})

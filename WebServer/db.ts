@@ -11,6 +11,8 @@ db.exec('CREATE TABLE IF NOT EXISTS readings(id INTEGER PRIMARY KEY AUTOINCREMEN
 // scans the whole table each time; with it, range lookups stay fast as rows grow.
 db.exec('CREATE INDEX IF NOT EXISTS idx_readings_timestamp ON readings(timestamp)')
 
+console.log(`Database ready: WebServer/data/readings.db`)
+
 const insertStmt = db.prepare("INSERT INTO readings (timestamp, temperature, humidity) VALUES (?,?,?)")
 
 const selectAllStmt = db.prepare("SELECT timestamp, temperature, humidity FROM readings ORDER BY timestamp")
