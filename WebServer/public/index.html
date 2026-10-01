@@ -4,457 +4,866 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sensor Dashboard</title>
+    <title>Room climate</title>
+
+    <script>
+        // Runs before the page paints, so a dark-theme visit never flashes light.
+        (function () {
+            var saved = null;
+            try { saved = localStorage.getItem("theme"); } catch (e) { }
+            var dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+            document.documentElement.dataset.theme = dark ? "dark" : "light";
+        })();
+    </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600;700&display=swap">
 
     <style>
+        /*
+         * Hygrothermograph: the analog instrument that records temperature and
+         * humidity as two pen traces on gridded chart paper. Red pen, blue pen,
+         * cool paper. Both ink pairs validated (lightness band, chroma, CVD,
+         * contrast) against their own surface.
+         */
         :root {
-            --bg: #0e1116;
-            --panel: #171c24;
-            --panel-2: #1e242e;
-            --border: #2a323d;
-            --text: #e6edf3;
-            --muted: #8b98a5;
-            --dim: #5d6b7a;
-            --temp: #ff8552;
-            --hum: #4cc9f0;
-            --up: #4ade80;
-            --down: #fb7185;
+            color-scheme: light;
+            --page: #e8eef1;
+            --surface: #fbfcfc;
+            --ink: #15232c;
+            --ink-2: #4b5c68;
+            --muted: #74838e;
+            --grid: #dde5ea;
+            --rule: #c2cdd4;
+            --temp: #c8432f;
+            --hum: #2b6cc4;
+            --good: #0b8a0b;
+            --warn: #b97d00;
+            --bad: #c53434;
+            --focus: #2b6cc4;
+            --band-alpha: 0.16;
+            --font: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+
+        /* Dark is selected, not inverted: its own ink steps, validated against the
+           dark surface. data-theme is set before first paint by the script in
+           <head> (saved choice, else the OS setting). */
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --page: #0d1316;
+            --surface: #161d21;
+            --ink: #eef3f5;
+            --ink-2: #b2bfc7;
+            --muted: #85939d;
+            --grid: #232d33;
+            --rule: #36444d;
+            --temp: #e05a45;
+            --hum: #4a8ae0;
+            --good: #2fbf4f;
+            --warn: #f0b429;
+            --bad: #ef6b6b;
+            --focus: #6aa3ee;
+            /* the same wash is near-invisible on a dark surface */
+            --band-alpha: 0.32;
         }
 
         * {
             box-sizing: border-box;
         }
 
-        body {
-            margin: 0;
-            padding: 20px;
-            background: var(--bg);
-            color: var(--text);
-            font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        /* Author display rules (.empty is flex) beat the UA's [hidden] rule, so
+           without this, setting el.hidden = true silently does nothing. */
+        [hidden] {
+            display: none !important;
         }
 
-        .wrap {
-            max-width: 1180px;
+        body {
+            margin: 0;
+            padding: 28px 20px 40px;
+            background: var(--page);
+            color: var(--ink);
+            font: 15px/1.5 var(--font);
+        }
+
+        main {
+            max-width: 1040px;
             margin: 0 auto;
         }
 
+        main.refreshing .chart-box,
+        main.refreshing .readings {
+            opacity: .5;
+        }
+
         /* ---------- header ---------- */
-        header {
+        .top {
             display: flex;
-            align-items: baseline;
             justify-content: space-between;
-            gap: 16px;
+            align-items: center;
+            gap: 12px 24px;
             flex-wrap: wrap;
             margin-bottom: 18px;
         }
 
         h1 {
             margin: 0;
-            font-size: 19px;
+            font-size: 18px;
             font-weight: 600;
-            letter-spacing: -0.01em;
         }
 
         .live {
             display: flex;
             align-items: center;
-            gap: 7px;
-            font-size: 12.5px;
-            color: var(--muted);
-            font-variant-numeric: tabular-nums;
+            gap: 8px;
+            margin: 0;
+            font-size: 14px;
+            color: var(--ink-2);
         }
 
-        .dot {
-            width: 8px;
-            height: 8px;
+        .live .dot {
+            width: 9px;
+            height: 9px;
             border-radius: 50%;
-            background: var(--dim);
-            flex: none;
+            background: var(--muted);
         }
 
-        .dot.ok {
-            background: var(--up);
-            box-shadow: 0 0 0 3px rgba(74, 222, 128, .15);
+        .live[data-state="good"] .dot {
+            background: var(--good);
         }
 
-        .dot.stale {
-            background: #fbbf24;
-            box-shadow: 0 0 0 3px rgba(251, 191, 36, .15);
+        .live[data-state="warn"] .dot {
+            background: var(--warn);
         }
 
-        .dot.dead {
-            background: var(--down);
-            box-shadow: 0 0 0 3px rgba(251, 113, 133, .15);
+        .live[data-state="bad"] .dot {
+            background: var(--bad);
         }
 
-        /* ---------- range tabs ---------- */
-        .ranges {
+        .live .state {
+            color: var(--ink);
+            font-weight: 600;
+        }
+
+        .top-right {
+            display: flex;
+            align-items: center;
+            gap: 10px 20px;
+            flex-wrap: wrap;
+        }
+
+        .theme {
+            appearance: none;
             display: inline-flex;
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 9px;
-            padding: 3px;
-            gap: 2px;
-            margin-bottom: 18px;
+            align-items: center;
+            gap: 8px;
+            margin: 0;
+            padding: 5px 12px 5px 10px;
+            border: 1px solid var(--rule);
+            border-radius: 999px;
+            background: var(--surface);
+            color: var(--ink-2);
+            font: 500 13px/1.4 var(--font);
+            cursor: pointer;
         }
 
-        .ranges button {
+        .theme:hover {
+            color: var(--ink);
+        }
+
+        /* a half-filled disc: the switch's state reads from its fill, not colour alone */
+        .theme .disc {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 1.5px solid currentColor;
+            background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+        }
+
+        .theme[aria-pressed="true"] .disc {
+            background: currentColor;
+        }
+
+        /* ---------- range control: one row, scopes everything below ---------- */
+        .range {
+            display: inline-flex;
+            gap: 2px;
+            padding: 3px;
+            border-radius: 999px;
+            background: var(--surface);
+            border: 1px solid var(--rule);
+            margin-bottom: 26px;
+        }
+
+        .range button {
             appearance: none;
             border: 0;
+            margin: 0;
+            padding: 6px 16px;
+            border-radius: 999px;
             background: transparent;
-            color: var(--muted);
-            font: inherit;
-            font-size: 13px;
-            font-weight: 500;
-            padding: 6px 15px;
-            border-radius: 6px;
+            color: var(--ink-2);
+            font: 500 14px/1.4 var(--font);
             cursor: pointer;
-            transition: background .12s, color .12s;
         }
 
-        .ranges button:hover {
-            color: var(--text);
+        .range button:hover {
+            color: var(--ink);
         }
 
-        .ranges button[aria-selected="true"] {
-            background: var(--panel-2);
-            color: var(--text);
-            box-shadow: inset 0 0 0 1px var(--border);
+        .range button[aria-pressed="true"] {
+            background: var(--ink);
+            color: var(--surface);
         }
 
-        /* ---------- metric cards ---------- */
-        .metrics {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 14px;
-            margin-bottom: 14px;
+        :focus-visible {
+            outline: 2px solid var(--focus);
+            outline-offset: 2px;
         }
 
-        .card {
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 11px;
-            padding: 16px 18px;
-        }
-
-        .card h2 {
-            margin: 0 0 2px;
-            font-size: 11.5px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: .07em;
-            color: var(--muted);
-        }
-
-        .big {
+        /* ---------- current reading: the one loud element ---------- */
+        .readings {
             display: flex;
-            align-items: baseline;
-            gap: 10px;
-            margin-bottom: 14px;
+            align-items: flex-end;
+            gap: 8px 48px;
+            flex-wrap: wrap;
+            margin-bottom: 6px;
         }
 
-        .big .v {
-            font-size: 34px;
+        .reading {
+            margin: 0;
+        }
+
+        .reading .value {
+            display: block;
+            font-size: 64px;
+            line-height: 1;
             font-weight: 600;
-            line-height: 1.1;
-            font-variant-numeric: tabular-nums;
             letter-spacing: -0.02em;
         }
 
-        .card.temp .big .v {
-            color: var(--temp);
-        }
-
-        .card.hum .big .v {
-            color: var(--hum);
-        }
-
-        .delta {
-            font-size: 13px;
+        .reading .value small {
+            font-size: 28px;
             font-weight: 500;
-            font-variant-numeric: tabular-nums;
-            color: var(--muted);
+            letter-spacing: 0;
+            margin-left: 4px;
+            color: var(--ink-2);
         }
 
-        .delta.up {
-            color: var(--up);
+        .reading .label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+            font-size: 14px;
+            color: var(--ink-2);
         }
 
-        .delta.down {
-            color: var(--down);
+        /* identity comes from a pen-stroke key beside the text, never from coloring the text */
+        .pen {
+            display: inline-block;
+            width: 18px;
+            height: 3px;
+            border-radius: 2px;
+            flex: none;
         }
 
-        /* stat grid inside a card */
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 1px;
-            background: var(--border);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
+        .pen.temp {
+            background: var(--temp);
         }
 
-        .grid div {
-            background: var(--panel);
-            padding: 8px 10px;
+        .pen.hum {
+            background: var(--hum);
         }
 
-        .grid .k {
-            display: block;
-            font-size: 10.5px;
-            text-transform: uppercase;
-            letter-spacing: .05em;
-            color: var(--dim);
-            margin-bottom: 2px;
+        .summary {
+            margin: 14px 0 30px;
+            max-width: 68ch;
+            color: var(--ink-2);
         }
 
-        .grid .n {
-            display: block;
-            font-size: 14.5px;
-            font-weight: 600;
-            font-variant-numeric: tabular-nums;
-        }
-
-        /* ---------- context strip ---------- */
-        .context {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 1px;
-            background: var(--border);
-            border: 1px solid var(--border);
-            border-radius: 11px;
-            overflow: hidden;
+        /* ---------- chart panels ---------- */
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--rule);
+            padding: 18px 20px 14px;
             margin-bottom: 18px;
         }
 
-        .context div {
-            background: var(--panel);
-            padding: 11px 16px;
-        }
-
-        .context .k {
-            display: block;
-            font-size: 10.5px;
-            text-transform: uppercase;
-            letter-spacing: .05em;
-            color: var(--dim);
-            margin-bottom: 3px;
-        }
-
-        .context .n {
-            display: block;
-            font-size: 16px;
-            font-weight: 600;
-            font-variant-numeric: tabular-nums;
-        }
-
-        /* ---------- charts ---------- */
-        .chart-card {
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 11px;
-            padding: 14px 16px 16px;
-            margin-bottom: 14px;
-        }
-
-        .chart-head {
+        .panel-head {
             display: flex;
-            align-items: baseline;
             justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 10px;
+            align-items: baseline;
+            gap: 6px 20px;
+            flex-wrap: wrap;
         }
 
-        .chart-head h3 {
+        h2 {
             margin: 0;
-            font-size: 13.5px;
+            font-size: 17px;
             font-weight: 600;
         }
 
-        .chart-head .hint {
-            font-size: 11.5px;
-            color: var(--dim);
+        .key {
+            display: flex;
+            gap: 18px;
+            flex-wrap: wrap;
+            margin: 0;
+            font-size: 13px;
+            color: var(--ink-2);
+        }
+
+        .key span {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+        }
+
+        .swatch-band {
+            display: inline-block;
+            width: 18px;
+            height: 10px;
+            border-radius: 2px;
+            flex: none;
+        }
+
+        .stats {
+            display: flex;
+            gap: 6px 28px;
+            flex-wrap: wrap;
+            margin: 12px 0 10px;
+            font-size: 14px;
+        }
+
+        .stats div {
+            display: flex;
+            gap: 6px;
+            align-items: baseline;
+        }
+
+        .stats dt {
+            color: var(--muted);
+        }
+
+        .stats dd {
+            margin: 0;
+            font-weight: 600;
+        }
+
+        .stats .when {
+            font-weight: 400;
+            color: var(--ink-2);
         }
 
         .chart-box {
-            height: 260px;
-        }
-
-        footer {
-            color: var(--dim);
-            font-size: 11.5px;
-            font-variant-numeric: tabular-nums;
-            padding-top: 4px;
-        }
-
-        footer.error {
-            color: var(--down);
+            position: relative;
+            height: 250px;
         }
 
         .empty {
-            color: var(--dim);
-            font-size: 13px;
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 0 24px;
             text-align: center;
-            padding: 34px 0;
+            color: var(--muted);
+            font-size: 14px;
         }
 
-        @media (max-width: 560px) {
-            .grid {
-                grid-template-columns: repeat(2, 1fr);
+        /* ---------- tooltip: value leads, label follows ---------- */
+        .tip {
+            position: absolute;
+            top: 6px;
+            z-index: 2;
+            min-width: 168px;
+            padding: 10px 12px;
+            background: var(--surface);
+            border: 1px solid var(--rule);
+            border-radius: 6px;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+            pointer-events: none;
+            font-size: 13px;
+        }
+
+        .tip .t {
+            color: var(--ink-2);
+            margin-bottom: 6px;
+        }
+
+        .tip .row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            line-height: 1.7;
+        }
+
+        .tip .row strong {
+            font-size: 14px;
+            color: var(--ink);
+        }
+
+        .tip .row span:last-child {
+            color: var(--ink-2);
+        }
+
+        .tip .n {
+            margin-top: 4px;
+            color: var(--muted);
+        }
+
+        /* ---------- table view: every chart has one ---------- */
+        details {
+            margin-top: 8px;
+            font-size: 14px;
+        }
+
+        summary {
+            cursor: pointer;
+            color: var(--ink-2);
+            padding: 4px 0;
+            width: fit-content;
+        }
+
+        summary:hover {
+            color: var(--ink);
+        }
+
+        .table-wrap {
+            max-height: 300px;
+            overflow: auto;
+            margin-top: 8px;
+            border-top: 1px solid var(--rule);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-variant-numeric: tabular-nums;
+        }
+
+        th,
+        td {
+            padding: 6px 10px;
+            text-align: right;
+            border-bottom: 1px solid var(--grid);
+            white-space: nowrap;
+        }
+
+        th:first-child,
+        td:first-child {
+            text-align: left;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: var(--surface);
+            color: var(--muted);
+            font-weight: 500;
+        }
+
+        /* ---------- footer ---------- */
+        .foot {
+            margin: 6px 0 0;
+            max-width: 72ch;
+            font-size: 14px;
+            color: var(--muted);
+        }
+
+        .foot.error {
+            color: var(--bad);
+        }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 20px 16px 32px;
+            }
+
+            .reading .value {
+                font-size: 48px;
+            }
+
+            .reading .value small {
+                font-size: 22px;
+            }
+
+            .panel {
+                padding: 14px 14px 10px;
+            }
+
+            .chart-box {
+                height: 220px;
             }
         }
     </style>
 </head>
 
 <body>
-    <div class="wrap">
-        <header>
-            <h1>Sensor Dashboard</h1>
-            <div class="live">
-                <span class="dot" id="dot"></span>
-                <span id="live-text">connecting&hellip;</span>
-            </div>
-        </header>
-
-        <div class="ranges" role="tablist" id="ranges">
-            <button role="tab" data-range="15m">15 min</button>
-            <button role="tab" data-range="1h" aria-selected="true">1 hour</button>
-            <button role="tab" data-range="1d">24 hours</button>
-            <button role="tab" data-range="1w">7 days</button>
-        </div>
-
-        <div class="metrics">
-            <div class="card temp">
-                <h2>Temperature</h2>
-                <div class="big">
-                    <span class="v" id="t-cur">&mdash;</span>
-                    <span class="delta" id="t-delta"></span>
-                </div>
-                <div class="grid">
-                    <div><span class="k">Min</span><span class="n" id="t-min">&mdash;</span></div>
-                    <div><span class="k">Avg</span><span class="n" id="t-avg">&mdash;</span></div>
-                    <div><span class="k">Max</span><span class="n" id="t-max">&mdash;</span></div>
-                    <div><span class="k">Std dev</span><span class="n" id="t-sd">&mdash;</span></div>
-                </div>
-            </div>
-
-            <div class="card hum">
-                <h2>Humidity</h2>
-                <div class="big">
-                    <span class="v" id="h-cur">&mdash;</span>
-                    <span class="delta" id="h-delta"></span>
-                </div>
-                <div class="grid">
-                    <div><span class="k">Min</span><span class="n" id="h-min">&mdash;</span></div>
-                    <div><span class="k">Avg</span><span class="n" id="h-avg">&mdash;</span></div>
-                    <div><span class="k">Max</span><span class="n" id="h-max">&mdash;</span></div>
-                    <div><span class="k">Std dev</span><span class="n" id="h-sd">&mdash;</span></div>
-                </div>
+    <main id="main">
+        <div class="top">
+            <h1>Room climate</h1>
+            <div class="top-right">
+                <p class="live" id="live" data-state="none">
+                    <span class="dot" aria-hidden="true"></span>
+                    <span class="state" id="live-state">Connecting</span>
+                    <span id="live-age"></span>
+                </p>
+                <button type="button" class="theme" id="theme" aria-pressed="false">
+                    <span class="disc" aria-hidden="true"></span>Dark theme
+                </button>
             </div>
         </div>
 
-        <div class="context">
-            <div><span class="k">Dew point</span><span class="n" id="c-dew">&mdash;</span></div>
-            <div><span class="k">Samples in range</span><span class="n" id="c-count">&mdash;</span></div>
-            <div><span class="k">Sample rate</span><span class="n" id="c-rate">&mdash;</span></div>
-            <div><span class="k">Coverage</span><span class="n" id="c-cov">&mdash;</span></div>
-            <div><span class="k">Resolution</span><span class="n" id="c-res">&mdash;</span></div>
+        <div class="range" role="group" aria-label="Time range" id="range">
+            <button type="button" data-range="15m" aria-pressed="false">15 min</button>
+            <button type="button" data-range="1h" aria-pressed="true">1 hour</button>
+            <button type="button" data-range="1d" aria-pressed="false">24 hours</button>
+            <button type="button" data-range="1w" aria-pressed="false">7 days</button>
         </div>
 
-        <div class="chart-card">
-            <div class="chart-head">
-                <h3>Temperature</h3>
-                <span class="hint">line = average per bucket &middot; band = min&ndash;max within bucket</span>
+        <div class="readings">
+            <p class="reading">
+                <span class="value"><span id="now-temp">&ndash;</span><small>°C</small></span>
+                <span class="label"><span class="pen temp" aria-hidden="true"></span>Temperature now</span>
+            </p>
+            <p class="reading">
+                <span class="value"><span id="now-hum">&ndash;</span><small>%</small></span>
+                <span class="label"><span class="pen hum" aria-hidden="true"></span>Humidity now</span>
+            </p>
+        </div>
+        <p class="summary" id="summary">&nbsp;</p>
+
+        <section class="panel" id="panel-temp" aria-labelledby="h-temp">
+            <div class="panel-head">
+                <h2 id="h-temp">Temperature</h2>
+                <p class="key">
+                    <span><span class="pen temp" aria-hidden="true"></span>Average</span>
+                    <span><span class="swatch-band" data-band="temp" aria-hidden="true"></span><span
+                            class="band-text">Low to high within each minute</span></span>
+                </p>
             </div>
-            <div class="chart-box"><canvas id="chart-temp"></canvas></div>
-        </div>
-
-        <div class="chart-card">
-            <div class="chart-head">
-                <h3>Humidity</h3>
-                <span class="hint">line = average per bucket &middot; band = min&ndash;max within bucket</span>
+            <dl class="stats">
+                <div><dt>Low</dt><dd><span data-stat="low">&ndash;</span> <span class="when" data-stat="low-at"></span></dd></div>
+                <div><dt>Average</dt><dd data-stat="avg">&ndash;</dd></div>
+                <div><dt>High</dt><dd><span data-stat="high">&ndash;</span> <span class="when" data-stat="high-at"></span></dd></div>
+                <div><dt>Variation</dt><dd data-stat="sd">&ndash;</dd></div>
+            </dl>
+            <div class="chart-box">
+                <canvas id="chart-temp" role="img" aria-label="Temperature chart"></canvas>
+                <div class="tip" hidden></div>
+                <p class="empty" hidden></p>
             </div>
-            <div class="chart-box"><canvas id="chart-hum"></canvas></div>
-        </div>
+            <details>
+                <summary>Show the numbers</summary>
+                <div class="table-wrap"></div>
+            </details>
+        </section>
 
-        <footer id="status">Loading&hellip;</footer>
-    </div>
+        <section class="panel" id="panel-hum" aria-labelledby="h-hum">
+            <div class="panel-head">
+                <h2 id="h-hum">Humidity</h2>
+                <p class="key">
+                    <span><span class="pen hum" aria-hidden="true"></span>Average</span>
+                    <span><span class="swatch-band" data-band="hum" aria-hidden="true"></span><span
+                            class="band-text">Low to high within each minute</span></span>
+                </p>
+            </div>
+            <dl class="stats">
+                <div><dt>Low</dt><dd><span data-stat="low">&ndash;</span> <span class="when" data-stat="low-at"></span></dd></div>
+                <div><dt>Average</dt><dd data-stat="avg">&ndash;</dd></div>
+                <div><dt>High</dt><dd><span data-stat="high">&ndash;</span> <span class="when" data-stat="high-at"></span></dd></div>
+                <div><dt>Variation</dt><dd data-stat="sd">&ndash;</dd></div>
+            </dl>
+            <div class="chart-box">
+                <canvas id="chart-hum" role="img" aria-label="Humidity chart"></canvas>
+                <div class="tip" hidden></div>
+                <p class="empty" hidden></p>
+            </div>
+            <details>
+                <summary>Show the numbers</summary>
+                <div class="table-wrap"></div>
+            </details>
+        </section>
+
+        <p class="foot" id="foot">Loading readings&hellip;</p>
+    </main>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script>
         const POLL_MS = 5000;
-        let currentRange = "1h";
-        let charts = {};
-        let lastPayload = null;
+
+        const RANGE_TEXT = {
+            "15m": "the last 15 minutes",
+            "1h": "the last hour",
+            "1d": "the last 24 hours",
+            "1w": "the last 7 days",
+        };
+
+        // Per-metric settings. minSpan stops the y-axis from zooming in on sensor
+        // noise: the DHT-22 reads in 0.1 steps, and a 0.1 °C wobble stretched to
+        // fill the chart reads as a dramatic swing.
+        const METRICS = {
+            temp: {
+                name: "temperature", unit: "°C", tick: "°", colorVar: "--temp",
+                minSpan: 2, floor: -40, ceil: 80, steady: 0.1,
+                avg: p => p.tAvg, lo: p => p.tMin, hi: p => p.tMax,
+                stats: s => s.temperature,
+            },
+            hum: {
+                name: "humidity", unit: "%", tick: "%", colorVar: "--hum",
+                minSpan: 6, floor: 0, ceil: 100, steady: 0.5,
+                avg: p => p.hAvg, lo: p => p.hMin, hi: p => p.hMax,
+                stats: s => s.humidity,
+            },
+        };
+
+        let range = "1h";
+        let last = null;      // last successful payload
+        let grid = [];        // full bucket grid for the current payload
+        const charts = {};
 
         const $ = id => document.getElementById(id);
+        const tok = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-        // ---------- formatting helpers ----------
-        const nbsp = "—";
-        const num = (v, d = 1, unit = "") =>
-            v === null || v === undefined || Number.isNaN(v)
-                ? nbsp
-                : v.toFixed(d) + unit;
-
-        function timeLabel(ts, range) {
-            const d = new Date(ts);
-            if (range === "1w") {
-                return d.toLocaleDateString([], { weekday: "short" }) + " " +
-                    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-            }
-            if (range === "1d") {
-                return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-            }
-            return d.toLocaleTimeString([], {
-                hour: "2-digit", minute: "2-digit",
-                second: range === "15m" ? "2-digit" : undefined,
-            });
+        function rgba(hex, a) {
+            const n = parseInt(hex.slice(1), 16);
+            return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
         }
 
-        function humanDuration(ms) {
-            if (ms < 0) ms = 0;
-            const s = Math.round(ms / 1000);
-            if (s < 60) return s + "s";
-            const m = Math.floor(s / 60);
-            if (m < 60) return m + "m " + (s % 60) + "s";
-            const h = Math.floor(m / 60);
-            if (h < 24) return h + "h " + (m % 60) + "m";
-            return Math.floor(h / 24) + "d " + (h % 24) + "h";
+        const one = v => (v === null || v === undefined || Number.isNaN(v)) ? "–" : v.toFixed(1);
+
+        // ---------- time formatting ----------
+        const hm = d => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const hms = d => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        const day = d => d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+        const wd = d => d.toLocaleDateString([], { weekday: "short" });
+
+        function bucketWords(ms) {
+            if (ms === 15_000) return "each 15 seconds";
+            if (ms === 60_000) return "each minute";
+            if (ms === 15 * 60_000) return "each 15 minutes";
+            if (ms === 60 * 60_000) return "each hour";
+            return "each bucket";
         }
 
-        function setDelta(el, change, unit) {
-            if (change === null || change === undefined) {
-                el.textContent = "";
-                el.className = "delta";
-                return;
+        // What one point on the chart covers, e.g. "Tue 14:15–14:30".
+        function spanText(t, bucketMs, r) {
+            const a = new Date(t), b = new Date(t + bucketMs);
+            if (r === "15m") return `${hms(a)}–${hms(b)}`;
+            if (r === "1h") return `${hm(a)}–${hm(b)}`;
+            if (r === "1d") return `${wd(a)} ${hm(a)}–${hm(b)}`;
+            return `${day(a)}, ${hm(a)}–${hm(b)}`;
+        }
+
+        // When an extreme happened, at the precision the range can support.
+        function whenText(t, r) {
+            const d = new Date(t);
+            if (r === "15m") return "at " + hms(d);
+            if (r === "1h") return "at " + hm(d);
+            return "on " + wd(d) + " at " + hm(d);
+        }
+
+        // Clean, regularly spaced x labels instead of whatever autoSkip lands on.
+        // On narrow charts the step doubles so labels never run into each other.
+        function tickLabel(i, narrow) {
+            const p = grid[i], prev = grid[i - 1];
+            if (!p) return null;
+            const d = new Date(p.t);
+            const hour = d.toLocaleTimeString([], { hour: "numeric" });
+            switch (range) {
+                case "15m": return d.getSeconds() < 15 && d.getMinutes() % (narrow ? 5 : 3) === 0 ? hm(d) : null;
+                case "1h": return d.getMinutes() % (narrow ? 20 : 10) === 0 ? hm(d) : null;
+                case "1d":
+                    if (d.getMinutes() >= 15 || d.getHours() % (narrow ? 6 : 3) !== 0) return null;
+                    return d.getHours() === 0 ? wd(d) : hour;
+                case "1w":
+                    if (!prev || new Date(prev.t).getDate() === d.getDate()) return null;
+                    return narrow ? wd(d) : d.toLocaleDateString([], { weekday: "short", day: "numeric" });
             }
-            const arrow = change > 0.05 ? "▲" : change < -0.05 ? "▼" : "→";
-            el.textContent = arrow + " " + Math.abs(change).toFixed(1) + unit + " over range";
-            el.className = "delta " + (change > 0.05 ? "up" : change < -0.05 ? "down" : "");
+            return null;
+        }
+
+        function ago(ms) {
+            const s = Math.max(0, Math.round(ms / 1000));
+            if (s < 60) return `${s} s ago`;
+            const m = Math.round(s / 60);
+            if (m < 60) return `${m} min ago`;
+            const h = Math.round(m / 60);
+            if (h < 48) return `${h} h ago`;
+            return `${Math.round(h / 24)} days ago`;
+        }
+
+        // ---------- chart plugins ----------
+        // Vertical hairline at the hovered time, drawn under the data.
+        const crosshair = {
+            id: "crosshair",
+            beforeDatasetsDraw(chart) {
+                const active = chart.tooltip?.getActiveElements?.() ?? [];
+                if (!active.length) return;
+                const x = Math.round(active[0].element.x) + 0.5;
+                const { top, bottom } = chart.chartArea;
+                const c = chart.ctx;
+                c.save();
+                c.strokeStyle = tok("--rule");
+                c.lineWidth = 1;
+                c.beginPath();
+                c.moveTo(x, top);
+                c.lineTo(x, bottom);
+                c.stroke();
+                c.restore();
+            },
+        };
+
+        function ringDot(c, x, y, r, fill) {
+            c.beginPath();
+            c.arc(x, y, r + 2, 0, Math.PI * 2);
+            c.fillStyle = tok("--surface");
+            c.fill();
+            c.beginPath();
+            c.arc(x, y, r, 0, Math.PI * 2);
+            c.fillStyle = fill;
+            c.fill();
+        }
+
+        // Selective direct labels: the latest value at the line's end, plus the
+        // high and the low. Never a number on every point.
+        const annotate = {
+            id: "annotate",
+            afterDatasetsDraw(chart) {
+                const m = METRICS[chart.$key];
+                const [dsHi, dsLo, dsAvg] = chart.data.datasets;
+                const avg = dsAvg.data, hi = dsHi.data, lo = dsLo.data;
+
+                let end = -1;
+                for (let i = avg.length - 1; i >= 0; i--) if (avg[i] !== null) { end = i; break; }
+                if (end < 0) return;
+
+                const c = chart.ctx;
+                const area = chart.chartArea;
+                const color = tok(m.colorVar);
+                c.save();
+                c.textBaseline = "middle";
+
+                let iHi = -1, iLo = -1;
+                for (let i = 0; i < hi.length; i++) {
+                    if (hi[i] !== null && (iHi < 0 || hi[i] > hi[iHi])) iHi = i;
+                    if (lo[i] !== null && (iLo < 0 || lo[i] < lo[iLo])) iLo = i;
+                }
+
+                // Only mark extremes when they differ meaningfully; on a flat
+                // trace "High 22.4 / Low 22.4" is noise.
+                if (iHi >= 0 && iLo >= 0 && hi[iHi] - lo[iLo] >= m.steady * 2) {
+                    c.font = `500 12px ${tok("--font")}`;
+                    c.fillStyle = tok("--ink-2");
+                    for (const [i, meta, text, dir] of [
+                        [iHi, chart.getDatasetMeta(0), `High ${one(hi[iHi])}${m.tick}`, -1],
+                        [iLo, chart.getDatasetMeta(1), `Low ${one(lo[iLo])}${m.tick}`, 1],
+                    ]) {
+                        const p = meta.data[i];
+                        // An extreme right next to the end point would double up with
+                        // the end label; the stat row above the chart still reports it.
+                        if (!p || i >= end - 2) continue;
+                        ringDot(c, p.x, p.y, 3, color);
+                        const w = c.measureText(text).width;
+                        const x = Math.min(Math.max(p.x, area.left + w / 2 + 2), area.right - w / 2 - 2);
+                        c.textAlign = "center";
+                        c.fillStyle = tok("--ink-2");
+                        c.fillText(text, x, p.y + dir * 12);
+                    }
+                }
+
+                const p = chart.getDatasetMeta(2).data[end];
+                ringDot(c, p.x, p.y, 4, color);
+                c.font = `600 13px ${tok("--font")}`;
+                c.fillStyle = tok("--ink");
+                c.textAlign = "left";
+                c.fillText(`${one(avg[end])}${m.tick}`, p.x + 10, p.y);
+                c.restore();
+            },
+        };
+
+        // ---------- tooltip ----------
+        function externalTooltip(key) {
+            return ({ chart, tooltip }) => {
+                const box = chart.canvas.parentNode;
+                const tip = box.querySelector(".tip");
+                const m = METRICS[key];
+                const i = tooltip.dataPoints?.[0]?.dataIndex;
+                const p = i === undefined ? null : grid[i];
+
+                if (tooltip.opacity === 0 || !p || p.empty) {
+                    tip.hidden = true;
+                    return;
+                }
+
+                tip.replaceChildren();
+                const add = (cls, text) => {
+                    const el = document.createElement("div");
+                    el.className = cls;
+                    el.textContent = text;
+                    tip.append(el);
+                    return el;
+                };
+                const row = (keyEl, value, label) => {
+                    const el = document.createElement("div");
+                    el.className = "row";
+                    const strong = document.createElement("strong");
+                    strong.textContent = value;
+                    const span = document.createElement("span");
+                    span.textContent = label;
+                    el.append(keyEl, strong, span);
+                    tip.append(el);
+                };
+
+                add("t", spanText(p.t, last.bucketMs, range));
+
+                const pen = document.createElement("span");
+                pen.className = "pen " + key;
+                row(pen, `${one(m.avg(p))} ${m.unit}`, "average");
+
+                const band = document.createElement("span");
+                band.className = "swatch-band";
+                band.style.background = rgba(tok(m.colorVar), 0.22);
+                row(band, `${one(m.lo(p))}–${one(m.hi(p))} ${m.unit}`, "low to high");
+
+                add("n", `${p.samples.toLocaleString()} ${p.samples === 1 ? "reading" : "readings"}`);
+
+                tip.hidden = false;
+                const x = tooltip.caretX;
+                const w = tip.offsetWidth;
+                const left = x + 16 + w > box.clientWidth ? x - 16 - w : x + 16;
+                tip.style.left = Math.max(0, left) + "px";
+            };
         }
 
         // ---------- charts ----------
-        // Three datasets per chart: max, then min filled back to max (that pair
-        // draws the band), then the average line on top.
-        function makeChart(canvasId, color, rgba, unit) {
-            return new Chart($(canvasId), {
+        function makeChart(key) {
+            const m = METRICS[key];
+            const color = tok(m.colorVar);
+            const band = rgba(color, Number(tok("--band-alpha")));
+            const chart = new Chart($("chart-" + key), {
                 type: "line",
                 data: {
                     labels: [],
                     datasets: [
+                        { data: [], borderWidth: 0, borderColor: "transparent", backgroundColor: band, pointRadius: 0, pointHoverRadius: 0, fill: false, cubicInterpolationMode: "monotone" },
+                        { data: [], borderWidth: 0, borderColor: "transparent", backgroundColor: band, pointRadius: 0, pointHoverRadius: 0, fill: "-1", cubicInterpolationMode: "monotone" },
                         {
-                            label: "max", data: [], borderColor: "transparent",
-                            backgroundColor: rgba, pointRadius: 0, fill: false, tension: .3,
-                        },
-                        {
-                            label: "min", data: [], borderColor: "transparent",
-                            backgroundColor: rgba, pointRadius: 0, fill: "-1", tension: .3,
-                        },
-                        {
-                            label: "avg", data: [], borderColor: color,
-                            borderWidth: 2, pointRadius: 0, pointHoverRadius: 4,
-                            fill: false, tension: .3,
+                            data: [], borderColor: color, backgroundColor: color, borderWidth: 2,
+                            borderCapStyle: "round", borderJoinStyle: "round", fill: false,
+                            cubicInterpolationMode: "monotone",
+                            // A lone bucket between gaps has no neighbours to draw a
+                            // line to, so give it a small dot instead of nothing.
+                            pointRadius: ctx => {
+                                const d = ctx.dataset.data, i = ctx.dataIndex;
+                                return d[i] !== null && d[i - 1] == null && d[i + 1] == null ? 2.5 : 0;
+                            },
+                            pointHoverRadius: 4, pointHoverBorderWidth: 2,
+                            pointHoverBorderColor: tok("--surface"), pointHoverBackgroundColor: color,
                         },
                     ],
                 },
@@ -462,141 +871,295 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     animation: false,
+                    spanGaps: false,
+                    layout: { padding: { top: 18, right: 58, bottom: 0, left: 0 } },
                     interaction: { mode: "index", intersect: false },
                     plugins: {
                         legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: ctx => {
-                                    const v = ctx.parsed.y;
-                                    if (v === null) return null;
-                                    return ctx.dataset.label + ": " + v.toFixed(1) + unit;
-                                },
-                                afterBody: items => {
-                                    const p = lastPayload?.points?.[items[0].dataIndex];
-                                    return p ? p.samples + " samples in bucket" : "";
-                                },
-                            },
-                        },
+                        tooltip: { enabled: false, external: externalTooltip(key) },
                     },
                     scales: {
                         x: {
-                            ticks: { color: "#5d6b7a", maxTicksLimit: 8, maxRotation: 0, font: { size: 11 } },
-                            grid: { color: "#222a34" },
+                            grid: { display: false },
+                            border: { color: tok("--rule") },
+                            ticks: {
+                                autoSkip: false, maxRotation: 0, color: tok("--muted"),
+                                font: { size: 12 },
+                                callback(_, i) { return tickLabel(i, this.chart.width < 620); },
+                            },
                         },
                         y: {
+                            grid: { color: tok("--grid") },
+                            border: { display: false },
                             ticks: {
-                                color: "#5d6b7a", font: { size: 11 },
-                                callback: v => v + unit,
+                                maxTicksLimit: 5, color: tok("--muted"), font: { size: 12 },
+                                callback: v => `${Number(v.toFixed(1))}${m.tick}`,
                             },
-                            grid: { color: "#222a34" },
                         },
                     },
                 },
+                plugins: [crosshair, annotate],
             });
+            chart.$key = key;
+
+            const panel = $("panel-" + key);
+            panel.querySelector(`[data-band="${key}"]`).style.background = rgba(color, 0.22);
+            return chart;
         }
 
-        function updateChart(chart, labels, avg, min, max) {
-            chart.data.labels = labels;
-            chart.data.datasets[0].data = max;
-            chart.data.datasets[1].data = min;
-            chart.data.datasets[2].data = avg;
-            chart.update();
+        function buildCharts() {
+            for (const k of Object.keys(charts)) charts[k].destroy();
+            Chart.defaults.font.family = tok("--font");
+            charts.temp = makeChart("temp");
+            charts.hum = makeChart("hum");
         }
 
-        // ---------- data ----------
-        async function refresh() {
-            try {
-                const res = await fetch("/api/series?range=" + currentRange);
-                if (!res.ok) throw new Error("HTTP " + res.status);
-                const d = await res.json();
-                lastPayload = d;
-                render(d);
-            } catch (err) {
-                $("status").className = "error";
-                $("status").textContent = "Failed to fetch: " + err.message;
+        // ---------- rendering ----------
+        // The server only returns buckets that have readings. Laying them onto a
+        // full grid that spans the whole range keeps time evenly spaced and turns
+        // missing buckets into visible gaps instead of silently joining across them.
+        function buildGrid(d) {
+            const byT = new Map(d.points.map(p => [p.t, p]));
+            const out = [];
+            const start = Math.floor(d.since / d.bucketMs) * d.bucketMs;
+            for (let t = start; t <= d.now; t += d.bucketMs) {
+                out.push(byT.get(t) ?? { t, empty: true });
             }
+            return out;
+        }
+
+        function renderChart(key, d) {
+            const m = METRICS[key];
+            const chart = charts[key];
+            const panel = $("panel-" + key);
+            const val = f => grid.map(p => p.empty ? null : f(p));
+
+            chart.data.labels = grid.map(p => p.t);
+            chart.data.datasets[0].data = val(m.hi);
+            chart.data.datasets[1].data = val(m.lo);
+            chart.data.datasets[2].data = val(m.avg);
+
+            // Y range: at least minSpan wide, centred on the data, with headroom
+            // for the high/low labels.
+            const filled = grid.filter(p => !p.empty);
+            const y = chart.options.scales.y;
+            if (filled.length) {
+                const lo = Math.min(...filled.map(m.lo));
+                const hi = Math.max(...filled.map(m.hi));
+                const span = Math.max(m.minSpan, (hi - lo) * 1.3);
+                const mid = (lo + hi) / 2;
+                y.suggestedMin = Math.max(m.floor, mid - span / 2);
+                y.suggestedMax = Math.min(m.ceil, mid + span / 2);
+            } else {
+                y.suggestedMin = undefined;
+                y.suggestedMax = undefined;
+            }
+            chart.update();
+
+            // stats
+            const s = m.stats(d.stats);
+            const set = (name, text) => { panel.querySelector(`[data-stat="${name}"]`).textContent = text; };
+            const extreme = (f, pick) => {
+                let best = null;
+                for (const p of filled) if (best === null || pick(f(p), f(best))) best = p;
+                return best;
+            };
+            const pLo = extreme(m.lo, (a, b) => a < b);
+            const pHi = extreme(m.hi, (a, b) => a > b);
+
+            set("low", s.min === null ? "–" : `${one(s.min)} ${m.unit}`);
+            set("low-at", pLo ? whenText(pLo.t, range) : "");
+            set("avg", s.avg === null ? "–" : `${one(s.avg)} ${m.unit}`);
+            set("high", s.max === null ? "–" : `${one(s.max)} ${m.unit}`);
+            set("high-at", pHi ? whenText(pHi.t, range) : "");
+            set("sd", s.stdev === null ? "–"
+                : s.stdev < 0.05 ? `under 0.1 ${m.unit}`
+                    : `± ${s.stdev.toFixed(s.stdev < 1 ? 2 : 1)} ${m.unit}`);
+
+            panel.querySelector(".band-text").textContent = "Low to high within " + bucketWords(d.bucketMs);
+
+            const empty = panel.querySelector(".empty");
+            empty.hidden = filled.length > 0;
+            empty.textContent = `No readings in ${RANGE_TEXT[range]}. They appear here as the sensor sends them.`;
+
+            $("chart-" + key).setAttribute("aria-label",
+                filled.length
+                    ? `${m.name[0].toUpperCase() + m.name.slice(1)} over ${RANGE_TEXT[range]}: low ${one(s.min)}, high ${one(s.max)}, average ${one(s.avg)} ${m.unit}.`
+                    : `No ${m.name} readings in ${RANGE_TEXT[range]}.`);
+
+            const details = panel.querySelector("details");
+            if (details.open) renderTable(key);
+        }
+
+        function renderTable(key) {
+            const m = METRICS[key];
+            const wrap = $("panel-" + key).querySelector(".table-wrap");
+            const scroll = wrap.scrollTop;
+            const table = document.createElement("table");
+            const head = table.createTHead().insertRow();
+            for (const h of ["Time", `Average (${m.unit})`, `Low (${m.unit})`, `High (${m.unit})`, "Readings"]) {
+                const th = document.createElement("th");
+                th.textContent = h;
+                head.append(th);
+            }
+            const body = table.createTBody();
+            for (let i = grid.length - 1; i >= 0; i--) {
+                const p = grid[i];
+                if (p.empty) continue;
+                const tr = body.insertRow();
+                for (const v of [spanText(p.t, last.bucketMs, range), one(m.avg(p)), one(m.lo(p)), one(m.hi(p)), p.samples.toLocaleString()]) {
+                    tr.insertCell().textContent = v;
+                }
+            }
+            if (!body.rows.length) {
+                const td = body.insertRow().insertCell();
+                td.colSpan = 5;
+                td.textContent = `No readings in ${RANGE_TEXT[range]}.`;
+            }
+            wrap.replaceChildren(table);
+            wrap.scrollTop = scroll;
+        }
+
+        function changeText(m, v) {
+            if (v === null || v === undefined) return null;
+            if (Math.abs(v) < m.steady) return `${m.name} held steady`;
+            return `${m.name} ${v > 0 ? "rose" : "fell"} ${Math.abs(v).toFixed(1)} ${m.unit}`;
         }
 
         function render(d) {
+            last = d;
+            grid = buildGrid(d);
             const s = d.stats;
-            const t = s.temperature, h = s.humidity;
 
-            // headline values
-            $("t-cur").textContent = num(t.current, 1, " °C");
-            $("h-cur").textContent = num(h.current, 1, " %");
-            setDelta($("t-delta"), t.change, "°");
-            setDelta($("h-delta"), h.change, "%");
+            $("now-temp").textContent = one(s.temperature.current);
+            $("now-hum").textContent = one(s.humidity.current);
 
-            $("t-min").textContent = num(t.min, 1, "°");
-            $("t-avg").textContent = num(t.avg, 1, "°");
-            $("t-max").textContent = num(t.max, 1, "°");
-            $("t-sd").textContent = num(t.stdev, 2);
+            const parts = [changeText(METRICS.temp, s.temperature.change), changeText(METRICS.hum, s.humidity.change)].filter(Boolean);
+            let summary = parts.length
+                ? `Over ${RANGE_TEXT[range]}, ${parts.join(" and ")}.`
+                : `No readings in ${RANGE_TEXT[range]} yet.`;
+            if (s.dewPoint !== null) summary += ` Dew point is ${one(s.dewPoint)} °C.`;
+            $("summary").textContent = summary;
 
-            $("h-min").textContent = num(h.min, 1, "%");
-            $("h-avg").textContent = num(h.avg, 1, "%");
-            $("h-max").textContent = num(h.max, 1, "%");
-            $("h-sd").textContent = num(h.stdev, 2);
-
-            // context strip
-            $("c-dew").textContent = num(s.dewPoint, 1, " °C");
-            $("c-count").textContent = s.count.toLocaleString();
-            $("c-res").textContent = humanDuration(d.bucketMs) + " buckets";
-
-            const span = s.firstTs && s.lastTs ? s.lastTs - s.firstTs : 0;
-            $("c-rate").textContent =
-                s.count > 1 && span > 0
-                    ? (span / (s.count - 1) / 1000).toFixed(1) + "s / reading"
-                    : nbsp;
-            // How much of the requested window actually has data behind it.
-            $("c-cov").textContent =
-                span > 0 ? Math.min(100, (span / (d.now - d.since)) * 100).toFixed(0) + "%" : "0%";
-
-            // liveness
-            const age = s.latestTs ? d.now - s.latestTs : null;
-            const dot = $("dot");
+            // Liveness: a flat line looks the same whether the room is stable or
+            // the sensor died, so say which.
+            const live = $("live");
+            const age = s.latestTs === null ? null : d.now - s.latestTs;
             if (age === null) {
-                dot.className = "dot";
-                $("live-text").textContent = "no data yet";
-            } else if (age < 30_000) {
-                dot.className = "dot ok";
-                $("live-text").textContent = "live · last reading " + humanDuration(age) + " ago";
-            } else if (age < 5 * 60_000) {
-                dot.className = "dot stale";
-                $("live-text").textContent = "stale · last reading " + humanDuration(age) + " ago";
+                live.dataset.state = "none";
+                $("live-state").textContent = "Waiting for data";
+                $("live-age").textContent = "";
             } else {
-                dot.className = "dot dead";
-                $("live-text").textContent = "offline · last reading " + humanDuration(age) + " ago";
+                live.dataset.state = age < 30_000 ? "good" : age < 5 * 60_000 ? "warn" : "bad";
+                $("live-state").textContent = age < 30_000 ? "Live" : age < 5 * 60_000 ? "Delayed" : "Offline";
+                $("live-age").textContent = "last reading " + ago(age);
             }
 
-            // charts
-            const labels = d.points.map(p => timeLabel(p.t, d.range));
-            updateChart(charts.temp, labels,
-                d.points.map(p => p.tAvg), d.points.map(p => p.tMin), d.points.map(p => p.tMax));
-            updateChart(charts.hum, labels,
-                d.points.map(p => p.hAvg), d.points.map(p => p.hMin), d.points.map(p => p.hMax));
+            renderChart("temp", d);
+            renderChart("hum", d);
 
-            $("status").className = "";
-            $("status").textContent =
-                "Updated " + new Date().toLocaleTimeString() +
-                " · " + d.points.length + " buckets from " + s.count.toLocaleString() +
-                " readings · " + d.rangeLabel;
+            const foot = $("foot");
+            foot.className = "foot";
+            if (s.count === 0) {
+                foot.textContent = `No readings in ${RANGE_TEXT[range]}.`;
+            } else {
+                const span = s.lastTs - s.firstTs;
+                const every = s.count > 1 && span > 0 ? (span / (s.count - 1) / 1000) : null;
+                // Coverage counts buckets that actually hold readings, so an outage
+                // in the middle of the range shows up here and not just as a gap.
+                const cover = Math.round(grid.filter(p => !p.empty).length / grid.length * 100);
+                foot.textContent =
+                    `${s.count.toLocaleString()} readings in ${RANGE_TEXT[range]}` +
+                    (every ? `, about one every ${every < 10 ? every.toFixed(1) : Math.round(every)} seconds.` : ".") +
+                    ` Readings cover ${cover}% of the period` +
+                    (cover < 97 ? "; gaps in the charts are times the sensor sent nothing." : ".");
+            }
+
+            $("main").classList.remove("refreshing");
+        }
+
+        async function refresh() {
+            const asked = range;
+            try {
+                const res = await fetch("/api/series?range=" + asked);
+                if (!res.ok) throw new Error("the server answered " + res.status);
+                const d = await res.json();
+                if (asked !== range) return; // a newer range was picked meanwhile
+                render(d);
+            } catch (err) {
+                $("main").classList.remove("refreshing");
+                const foot = $("foot");
+                foot.className = "foot error";
+                foot.textContent = last
+                    ? `Can't reach the server (${err.message}). Showing the last data received and retrying every 5 seconds.`
+                    : `Can't reach the server (${err.message}). Retrying every 5 seconds.`;
+            }
         }
 
         // ---------- wiring ----------
-        $("ranges").addEventListener("click", e => {
+        function selectRange(r, { fetchNow }) {
+            range = r;
+            for (const b of $("range").querySelectorAll("button")) {
+                b.setAttribute("aria-pressed", String(b.dataset.range === r));
+            }
+            if (location.hash !== "#" + r) history.replaceState(null, "", "#" + r);
+            if (fetchNow) {
+                // Keep the previous charts on screen, dimmed, until the new range lands.
+                $("main").classList.add("refreshing");
+                refresh();
+            }
+        }
+
+        $("range").addEventListener("click", e => {
             const btn = e.target.closest("button");
-            if (!btn) return;
-            currentRange = btn.dataset.range;
-            [...$("ranges").children].forEach(b =>
-                b.setAttribute("aria-selected", b === btn ? "true" : "false"));
-            refresh();
+            if (!btn || btn.dataset.range === range) return;
+            selectRange(btn.dataset.range, { fetchNow: true });
         });
 
-        charts.temp = makeChart("chart-temp", "#ff8552", "rgba(255,133,82,.16)", "°C");
-        charts.hum = makeChart("chart-hum", "#4cc9f0", "rgba(76,201,240,.14)", "%");
+        // The URL hash holds the range, so a view can be bookmarked (/#1w).
+        const fromHash = location.hash.slice(1);
+        if (RANGE_TEXT[fromHash]) selectRange(fromHash, { fetchNow: false });
+
+        for (const key of Object.keys(METRICS)) {
+            $("panel-" + key).querySelector("details").addEventListener("toggle", e => {
+                if (e.target.open && last) renderTable(key);
+            });
+        }
+
+        // ---------- theme ----------
+        // Canvas colours are read from CSS tokens when a chart is built, so a theme
+        // change rebuilds the charts rather than just swapping stylesheet values.
+        function applyTheme(t) {
+            document.documentElement.dataset.theme = t;
+            $("theme").setAttribute("aria-pressed", String(t === "dark"));
+            buildCharts();
+            if (last) render(last);
+        }
+
+        $("theme").setAttribute("aria-pressed", String(document.documentElement.dataset.theme === "dark"));
+
+        $("theme").addEventListener("click", () => {
+            const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+            try { localStorage.setItem("theme", next); } catch (e) { }
+            applyTheme(next);
+        });
+
+        // Until someone picks a theme, keep following the OS setting.
+        matchMedia("(prefers-color-scheme: dark)").addEventListener("change", e => {
+            let saved = null;
+            try { saved = localStorage.getItem("theme"); } catch (err) { }
+            if (!saved) applyTheme(e.matches ? "dark" : "light");
+        });
+
+        buildCharts();
         refresh();
         setInterval(refresh, POLL_MS);
+
+        // Canvas text is measured at draw time; redraw once the webfont is in.
+        document.fonts?.ready.then(() => {
+            buildCharts();
+            if (last) render(last);
+        });
     </script>
 </body>
 

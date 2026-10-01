@@ -577,3 +577,61 @@ in the sections above; this is just a timeline.
     buttons and two charts. A framework would add a second `package.json`, a
     build step and a dev-server proxy for no gain, against a stated preference
     for backend focus. Revisit if the UI grows real state.
+- **2026-10-01** — Added `README.md` (GitHub-facing setup tutorial, clone →
+  flash → wire → configure → upload → dashboard, plus API reference and
+  troubleshooting) and `ESP/secrets.example.py` as a committed template, since
+  `secrets.py` itself is gitignored. Verified the README's commands against the
+  real tools: esptool v5 uses hyphenated `erase-flash`/`write-flash`;
+  `mpremote mip install urequests` installs from the host, so the device needs
+  no WiFi for that step. Confirmed `secrets.py` was never committed to history.
+  - The startup banner lists *every* adapter as a "Network" address (VPN,
+    VirtualBox `192.168.56.x`, link-local `169.254.x`) and labels each one
+    "use this in SERVER_URL" — only the LAN one works. README explains how to
+    pick; filtering link-local/virtual adapters in `index.ts` would be a small
+    cleanup.
+- **2026-10-01** — **Dashboard redesigned for chart readability**, using the
+  `frontend-design` plugin (installed mid-session, so its SKILL.md was read
+  from the plugin cache rather than loaded) plus the `dataviz` guidance.
+  Still vanilla HTML + Chart.js, no build step. Verified by headless-Chrome
+  screenshots of every range, dark mode, a true 390px width (via an iframe —
+  headless Chrome won't go below ~500px window width) and a simulated hover.
+  - **Concept:** hygrothermograph — the analog instrument that pens
+    temperature and humidity on two separate gridded charts, red and blue ink.
+    Palette validated with the dataviz script in both modes (dark inks first
+    failed the lightness band and were stepped down). Follows the OS light/dark
+    setting. Typeface: Atkinson Hyperlegible Next (designed for legibility).
+  - **Readability fixes, most important first:**
+    - *Gaps are now honest.* The server only returns non-empty buckets; the
+      client lays them onto a full time grid, so outages show as breaks instead
+      of a line silently joined across hours. Caught a real one on first render
+      (11:30–11:44, when no server was running).
+    - *No zooming into noise.* Y-axis has a minimum span (2 °C / 6 %) so the
+      DHT-22's 0.1-step jitter doesn't look like a swing.
+    - *Selective direct labels:* current value at the line end, High/Low marked
+      on the band — suppressed when next to the end point to avoid doubling.
+    - *Tooltip* says what a point covers ("Thu 01:30–01:45"), value first,
+      then range and reading count; crosshair hairline under the data.
+    - *Regular x labels* (every 3 h, each midnight, each day) instead of
+      autoSkip's picks; step doubles on narrow screens.
+    - Text in ink colours, identity via pen-stroke keys; change described in
+      words ("rose 0.6 %"), not green/red — warmer isn't "good".
+    - Table view ("Show the numbers") under every chart; range kept in the URL
+      hash so views are bookmarkable (`/#1w`).
+  - **Gotcha:** `.empty { display: flex }` overrode the browser's `[hidden]`
+    rule, so the "No readings" message showed on top of real data. Fixed with
+    a global `[hidden] { display: none !important }`.
+  - **Gotcha:** coverage % was first-to-last-reading span, so it said 100%
+    across a visible outage. Now counts non-empty buckets.
+- **2026-10-01** — **Theme switch + README screenshots.** Dark theme existed
+  but only via the OS setting; added a "Dark theme" toggle (`aria-pressed`)
+  that's remembered in `localStorage`. Restructured so dark tokens live in one
+  `:root[data-theme="dark"]` block, and a tiny inline `<head>` script sets
+  `data-theme` before first paint (saved choice, else OS) — no light flash.
+  With no saved choice it keeps following OS changes. Charts are rebuilt on
+  switch because Chart.js reads colours from CSS tokens only at build time.
+  README now has light (24 h) and dark (7 d) screenshots in
+  `docs/screenshots/`, captured at 2× with headless Chrome, and an updated
+  features list / step 9 / troubleshooting.
+  - **Gotcha (headless Chrome):** with Chrome already open, `--headless
+    --screenshot` silently hands off to the running browser and writes
+    nothing. Needs its own `--user-data-dir`.
