@@ -10,9 +10,13 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
+    "chart.js": "4.4.7",
     "tsx": "^4.23.12"
   },
   "scripts": {
+    "build:client": "tsc -p WebServer/client",
+    "watch:client": "tsc -p WebServer/client --watch",
+    "predev": "npm run build:client",
     "dev": "tsx watch WebServer/index.ts"
   }
 }

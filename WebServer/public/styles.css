@@ -1,0 +1,477 @@
+/*
+ * Hygrothermograph: the analog instrument that records temperature and
+ * humidity as two pen traces on gridded chart paper. Red pen, blue pen,
+ * cool paper. Both ink pairs validated (lightness band, chroma, CVD,
+ * contrast) against their own surface.
+ */
+:root {
+    color-scheme: light;
+    --page: #e8eef1;
+    --surface: #fbfcfc;
+    --ink: #15232c;
+    --ink-2: #4b5c68;
+    --muted: #74838e;
+    --grid: #dde5ea;
+    --rule: #c2cdd4;
+    --temp: #c8432f;
+    --hum: #2b6cc4;
+    --good: #0b8a0b;
+    --warn: #b97d00;
+    --bad: #c53434;
+    --focus: #2b6cc4;
+    --band-alpha: 0.16;
+    --font: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* Dark is selected, not inverted: its own ink steps, validated against the
+   dark surface. data-theme is set before first paint by the script in
+   <head> (saved choice, else the OS setting). */
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d1316;
+    --surface: #161d21;
+    --ink: #eef3f5;
+    --ink-2: #b2bfc7;
+    --muted: #85939d;
+    --grid: #232d33;
+    --rule: #36444d;
+    --temp: #e05a45;
+    --hum: #4a8ae0;
+    --good: #2fbf4f;
+    --warn: #f0b429;
+    --bad: #ef6b6b;
+    --focus: #6aa3ee;
+    /* the same wash is near-invisible on a dark surface */
+    --band-alpha: 0.32;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+/* Author display rules (.empty is flex) beat the UA's [hidden] rule, so
+   without this, setting el.hidden = true silently does nothing. */
+[hidden] {
+    display: none !important;
+}
+
+body {
+    margin: 0;
+    padding: 28px 20px 40px;
+    background: var(--page);
+    color: var(--ink);
+    font: 15px/1.5 var(--font);
+}
+
+main {
+    max-width: 1040px;
+    margin: 0 auto;
+}
+
+main.refreshing .chart-box,
+main.refreshing .readings {
+    opacity: .5;
+}
+
+/* ---------- header ---------- */
+.top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px 24px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+}
+
+h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.live {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 14px;
+    color: var(--ink-2);
+}
+
+.live .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--muted);
+}
+
+.live[data-state="good"] .dot {
+    background: var(--good);
+}
+
+.live[data-state="warn"] .dot {
+    background: var(--warn);
+}
+
+.live[data-state="bad"] .dot {
+    background: var(--bad);
+}
+
+.live .state {
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.top-right {
+    display: flex;
+    align-items: center;
+    gap: 10px 20px;
+    flex-wrap: wrap;
+}
+
+.theme {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 5px 12px 5px 10px;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font: 500 13px/1.4 var(--font);
+    cursor: pointer;
+}
+
+.theme:hover {
+    color: var(--ink);
+}
+
+/* a half-filled disc: the switch's state reads from its fill, not colour alone */
+.theme .disc {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+
+.theme[aria-pressed="true"] .disc {
+    background: currentColor;
+}
+
+/* ---------- range control: one row, scopes everything below ---------- */
+.range {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    margin-bottom: 26px;
+}
+
+.range button {
+    appearance: none;
+    border: 0;
+    margin: 0;
+    padding: 6px 16px;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--ink-2);
+    font: 500 14px/1.4 var(--font);
+    cursor: pointer;
+}
+
+.range button:hover {
+    color: var(--ink);
+}
+
+.range button[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--surface);
+}
+
+:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+/* ---------- current reading: the one loud element ---------- */
+.readings {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px 48px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.reading {
+    margin: 0;
+}
+
+.reading .value {
+    display: block;
+    font-size: 64px;
+    line-height: 1;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+}
+
+.reading .value small {
+    font-size: 28px;
+    font-weight: 500;
+    letter-spacing: 0;
+    margin-left: 4px;
+    color: var(--ink-2);
+}
+
+.reading .label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 14px;
+    color: var(--ink-2);
+}
+
+/* identity comes from a pen-stroke key beside the text, never from coloring the text */
+.pen {
+    display: inline-block;
+    width: 18px;
+    height: 3px;
+    border-radius: 2px;
+    flex: none;
+}
+
+.pen.temp {
+    background: var(--temp);
+}
+
+.pen.hum {
+    background: var(--hum);
+}
+
+.summary {
+    margin: 14px 0 30px;
+    max-width: 68ch;
+    color: var(--ink-2);
+}
+
+/* ---------- chart panels ---------- */
+.panel {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 18px 20px 14px;
+    margin-bottom: 18px;
+}
+
+.panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 6px 20px;
+    flex-wrap: wrap;
+}
+
+h2 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+}
+
+.key {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    margin: 0;
+    font-size: 13px;
+    color: var(--ink-2);
+}
+
+.key span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.swatch-band {
+    display: inline-block;
+    width: 18px;
+    height: 10px;
+    border-radius: 2px;
+    flex: none;
+}
+
+.stats {
+    display: flex;
+    gap: 6px 28px;
+    flex-wrap: wrap;
+    margin: 12px 0 10px;
+    font-size: 14px;
+}
+
+.stats div {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+}
+
+.stats dt {
+    color: var(--muted);
+}
+
+.stats dd {
+    margin: 0;
+    font-weight: 600;
+}
+
+.stats .when {
+    font-weight: 400;
+    color: var(--ink-2);
+}
+
+.chart-box {
+    position: relative;
+    height: 250px;
+}
+
+.empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 0 24px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+/* ---------- tooltip: value leads, label follows ---------- */
+.tip {
+    position: absolute;
+    top: 6px;
+    z-index: 2;
+    min-width: 168px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+    pointer-events: none;
+    font-size: 13px;
+}
+
+.tip .t {
+    color: var(--ink-2);
+    margin-bottom: 6px;
+}
+
+.tip .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    line-height: 1.7;
+}
+
+.tip .row strong {
+    font-size: 14px;
+    color: var(--ink);
+}
+
+.tip .row span:last-child {
+    color: var(--ink-2);
+}
+
+.tip .n {
+    margin-top: 4px;
+    color: var(--muted);
+}
+
+/* ---------- table view: every chart has one ---------- */
+details {
+    margin-top: 8px;
+    font-size: 14px;
+}
+
+summary {
+    cursor: pointer;
+    color: var(--ink-2);
+    padding: 4px 0;
+    width: fit-content;
+}
+
+summary:hover {
+    color: var(--ink);
+}
+
+.table-wrap {
+    max-height: 300px;
+    overflow: auto;
+    margin-top: 8px;
+    border-top: 1px solid var(--rule);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+    padding: 6px 10px;
+    text-align: right;
+    border-bottom: 1px solid var(--grid);
+    white-space: nowrap;
+}
+
+th:first-child,
+td:first-child {
+    text-align: left;
+}
+
+th {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    color: var(--muted);
+    font-weight: 500;
+}
+
+/* ---------- footer ---------- */
+.foot {
+    margin: 6px 0 0;
+    max-width: 72ch;
+    font-size: 14px;
+    color: var(--muted);
+}
+
+.foot.error {
+    color: var(--bad);
+}
+
+@media (max-width: 600px) {
+    body {
+        padding: 20px 16px 32px;
+    }
+
+    .reading .value {
+        font-size: 48px;
+    }
+
+    .reading .value small {
+        font-size: 22px;
+    }
+
+    .panel {
+        padding: 14px 14px 10px;
+    }
+
+    .chart-box {
+        height: 220px;
+    }
+}

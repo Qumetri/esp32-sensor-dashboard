@@ -1,0 +1,26 @@
+{
+  // Browser code for the dashboard. Compiled to WebServer/public/js, which
+  // Express serves as static files; index.html loads js/main.js as a module.
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "../public/js",
+
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "types": [],
+
+    "sourceMap": true,
+    "inlineSources": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true
+  },
+  "include": ["./**/*.ts"]
+}

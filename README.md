@@ -86,6 +86,8 @@ npm install
 npm run dev
 ```
 
+This compiles the dashboard's TypeScript (`WebServer/client/` → `WebServer/public/js/`) and starts the server, restarting it when server code changes. If you're editing the dashboard itself, also run `npm run watch:client` in a second terminal so it recompiles on save, then refresh the browser.
+
 You should see something like:
 
 ```
@@ -291,7 +293,18 @@ If you change the port, update `SERVER_URL` to match.
 ├── WebServer/
 │   ├── index.ts             Express app: routes, validation, statistics
 │   ├── db.ts                SQLite connection, schema, queries
-│   ├── public/index.html    Dashboard (static HTML + Chart.js)
+│   ├── client/              Dashboard TypeScript (compiled to public/js/)
+│   │   ├── main.ts          Entry point: fetching, polling, range and theme controls
+│   │   ├── render.ts        Fills in readings, stats, charts and tables
+│   │   ├── charts.ts        Chart.js setup and axis labels
+│   │   ├── plugins.ts       Chart plugins: crosshair, high/low/latest labels
+│   │   ├── tooltip.ts       Hover tooltip
+│   │   ├── config.ts        Ranges and per-metric settings
+│   │   └── types.ts         Shapes of the API response
+│   ├── public/
+│   │   ├── index.html       Dashboard markup
+│   │   ├── styles.css       Dashboard styles and theme tokens
+│   │   └── js/              Compiled client code — generated, gitignored
 │   └── data/                SQLite database — created on first run, gitignored
 ├── docs/screenshots/        Images used in this README
 ├── NOTES.md                 Development log: decisions, gotchas, progress
@@ -306,7 +319,7 @@ If you change the port, update `SERVER_URL` to match.
 | Server | Node.js 22, Express 5, TypeScript, run directly with `tsx` |
 | Validation | zod |
 | Storage | SQLite via `better-sqlite3` (raw SQL, no ORM) |
-| Dashboard | Static HTML, Chart.js 4 from a CDN, no build step; Atkinson Hyperlegible Next from Google Fonts |
+| Dashboard | HTML + CSS, TypeScript compiled with `tsc` (no bundler), Chart.js 4 from a CDN; Atkinson Hyperlegible Next from Google Fonts |
 
 Design decisions and the reasoning behind them are recorded in [NOTES.md](NOTES.md).
 
