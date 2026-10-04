@@ -6,7 +6,7 @@ import mip
 import urequests
 from secrets import WIFI_SSID, WIFI_PASSWORD
 
-#mip.install("urequests")
+# mip.install("urequests")
 
 
 def connect_wifi():
@@ -22,20 +22,29 @@ def connect_wifi():
         print("Connected, IP:", wlan.ifconfig()[0])
     else:
         print("WiFi connection failed")
+
+
 sensor = dht.DHT22(Pin(4))
 SERVER_URL = "http://192.168.0.208:3001/api/readings"
+# One reading a minute: room air changes slowly, and every post is a DB write.
+INTERVAL_MS = 60 * 1000
+
 
 def send_reading(temp, hum):
     try:
-        response = urequests.post(SERVER_URL, json={"temperature": temp, "humidity": hum})
+        response = urequests.post(
+            SERVER_URL, json={"temperature": temp, "humidity": hum}
+        )
         print("Server responded:", response.status_code)
         response.close()
     except Exception as e:
         print("POST failed:", e)
 
+
 connect_wifi()
 
 while True:
+    started = time.ticks_ms()
     try:
         sensor.measure()
         temp = sensor.temperature()
@@ -44,4 +53,7 @@ while True:
         send_reading(temp, hum)
     except OSError as e:
         print("Read failed:", e)
-    time.sleep(2)
+    # Sleep for what's left of the interval, so measuring and posting don't
+    # make each cycle drift past 60 s.
+    elapsed = time.ticks_diff(time.ticks_ms(), started)
+    time.sleep_ms(max(0, INTERVAL_MS - elapsed))

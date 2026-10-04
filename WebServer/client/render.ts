@@ -1,11 +1,23 @@
 import { charts } from "./charts.js";
-import { METRICS, RANGE_TEXT } from "./config.js";
+import { BRIDGE_MS, METRICS, RANGE_TEXT, SEND_INTERVAL_MS } from "./config.js";
 import { $, qs } from "./dom.js";
 import { ago, bucketWords, one, spanText, whenText } from "./format.js";
 import { state } from "./state.js";
-import type { GridPoint, Metric, MetricKey, Point, Series } from "./types.js";
+import type { EmptyPoint, GridPoint, Metric, MetricKey, Point, Series } from "./types.js";
 
 const isFilled = (p: GridPoint): p is Point => !p.empty;
+
+const lerp = (a: number, b: number, f: number) => a + (b - a) * f;
+
+function between(a: Point, b: Point, t: number): Point {
+    const f = (t - a.t) / (b.t - a.t);
+    return {
+        t,
+        tAvg: lerp(a.tAvg, b.tAvg, f), tMin: lerp(a.tMin, b.tMin, f), tMax: lerp(a.tMax, b.tMax, f),
+        hAvg: lerp(a.hAvg, b.hAvg, f), hMin: lerp(a.hMin, b.hMin, f), hMax: lerp(a.hMax, b.hMax, f),
+        samples: 0,
+    };
+}
 
 // The server only returns buckets that have readings. Laying them onto a
 // full grid that spans the whole range keeps time evenly spaced and turns
@@ -17,6 +29,20 @@ function buildGrid(d: Series): GridPoint[] {
     for (let t = start; t <= d.now; t += d.bucketMs) {
         out.push(byT.get(t) ?? { t, empty: true });
     }
+
+    // Bridge empty runs that are only jitter, not missed readings.
+    let prev: Point | null = null;
+    for (let i = 0; i < out.length; i++) {
+        const p = out[i]!;
+        if (p.empty) continue;
+        if (prev && p.t - prev.t <= BRIDGE_MS) {
+            for (let j = i - 1; j >= 0 && out[j]!.empty; j--) {
+                const gap = out[j] as EmptyPoint;
+                gap.bridge = between(prev, p, gap.t);
+            }
+        }
+        prev = p;
+    }
     return out;
 }
 
@@ -25,7 +51,7 @@ function renderChart(key: MetricKey, d: Series): void {
     const chart = charts[key];
     const panel = $("panel-" + key);
     const { grid, range } = state;
-    const val = (f: (p: Point) => number) => grid.map(p => p.empty ? null : f(p));
+    const val = (f: (p: Point) => number) => grid.map(p => p.empty ? (p.bridge ? f(p.bridge) : null) : f(p));
 
     chart.data.labels = grid.map(p => p.t);
     chart.data.datasets[0]!.data = val(m.hi);
@@ -116,6 +142,18 @@ export function renderTable(key: MetricKey): void {
     wrap.scrollTop = scroll;
 }
 
+/** Percent of buckets with readings, not counting the empty edge buckets that
+ * only mean "before the first reading" or "next reading not due yet". */
+function coverage(grid: GridPoint[], d: Series): number {
+    const has = (p: GridPoint) => !p.empty || !!p.bridge;
+    let from = grid.findIndex(has), to = grid.findLastIndex(has);
+    if (from < 0) return 0;
+    if (grid[from]!.t - d.since > BRIDGE_MS) from = 0;
+    if (d.now - grid[to]!.t > BRIDGE_MS + d.bucketMs) to = grid.length - 1;
+    const span = grid.slice(from, to + 1);
+    return Math.round(span.filter(has).length / span.length * 100);
+}
+
 function changeText(m: Metric, v: number | null | undefined): string | null {
     if (v === null || v === undefined) return null;
     if (Math.abs(v) < m.steady) return `${m.name} held steady`;
@@ -147,8 +185,10 @@ export function render(d: Series): void {
         $("live-state").textContent = "Waiting for data";
         $("live-age").textContent = "";
     } else {
-        live.dataset["state"] = age < 30_000 ? "good" : age < 5 * 60_000 ? "warn" : "bad";
-        $("live-state").textContent = age < 30_000 ? "Live" : age < 5 * 60_000 ? "Delayed" : "Offline";
+        // One missed reading is "Delayed"; five minutes of silence is "Offline".
+        const fresh = age < 1.5 * SEND_INTERVAL_MS, stale = age >= 5 * 60_000;
+        live.dataset["state"] = fresh ? "good" : stale ? "bad" : "warn";
+        $("live-state").textContent = fresh ? "Live" : stale ? "Offline" : "Delayed";
         $("live-age").textContent = "last reading " + ago(age);
     }
 
@@ -164,7 +204,7 @@ export function render(d: Series): void {
         const every = s.count > 1 && span > 0 ? (span / (s.count - 1) / 1000) : null;
         // Coverage counts buckets that actually hold readings, so an outage
         // in the middle of the range shows up here and not just as a gap.
-        const cover = Math.round(grid.filter(isFilled).length / grid.length * 100);
+        const cover = coverage(grid, d);
         foot.textContent =
             `${s.count.toLocaleString()} readings in ${RANGE_TEXT[range]}` +
             (every ? `, about one every ${every < 10 ? every.toFixed(1) : Math.round(every)} seconds.` : ".") +

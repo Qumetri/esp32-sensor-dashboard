@@ -20,8 +20,8 @@ async function refresh(): Promise<void> {
         const foot = $("foot");
         foot.className = "foot error";
         foot.textContent = state.last
-            ? `Can't reach the server (${message}). Showing the last data received and retrying every 5 seconds.`
-            : `Can't reach the server (${message}). Retrying every 5 seconds.`;
+            ? `Can't reach the server (${message}). Showing the last data received and retrying every ${POLL_MS / 1000} seconds.`
+            : `Can't reach the server (${message}). Retrying every ${POLL_MS / 1000} seconds.`;
     }
 }
 

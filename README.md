@@ -16,12 +16,12 @@ An ESP32 running MicroPython reads temperature and humidity from a DHT-22 sensor
 ```
 ┌──────────────┐   HTTP POST (JSON)   ┌───────────────────┐        ┌──────────┐
 │ ESP32        │ ───────────────────> │ Express + TS      │ ─────> │ SQLite   │
-│ + DHT-22     │   every 2 s          │ zod validation    │        │ (file)   │
+│ + DHT-22     │   every 60 s         │ zod validation    │        │ (file)   │
 └──────────────┘                      └─────────┬─────────┘        └──────────┘
                                                 │ GET /api/series?range=…
                                                 ▼
                                       ┌───────────────────┐
-                                      │ Browser dashboard │  Chart.js, polls every 5 s
+                                      │ Browser dashboard │  Chart.js, polls every 15 s
                                       └───────────────────┘
 ```
 
@@ -30,7 +30,7 @@ An ESP32 running MicroPython reads temperature and humidity from a DHT-22 sensor
 **Charts**
 
 - **Separate temperature and humidity charts.** Each shows an average line plus a shaded band for the low-to-high range inside each time slot, so short spikes stay visible after averaging.
-- **Four time ranges** — 15 min, 1 hour, 24 hours, 7 days. Readings are grouped in SQL on the server, so a week of data (~300k rows) arrives as ~170 points.
+- **Four time ranges** — 15 min, 1 hour, 24 hours, 7 days. Readings are grouped in SQL on the server, so a week of data (~10k rows) arrives as ~170 points.
 - **Gaps are shown as gaps.** If the sensor goes quiet, the line breaks instead of drawing a straight line across the missing time.
 - **The scale doesn't exaggerate noise.** Temperature always spans at least 2 °C and humidity at least 6 %, so the sensor's 0.1-step jitter stays flat.
 - **Labels where they help:** the latest value at the end of each line, and the high and low of the range marked on the chart.
@@ -255,7 +255,7 @@ Aggregated data for the dashboard. `range` is one of `15m`, `1h` (default), `1d`
 
 | Range | Bucket size | Points |
 |---|---|---|
-| `15m` | 15 s | ~60 |
+| `15m` | 1 min | ~15 |
 | `1h` | 1 min | ~60 |
 | `1d` | 15 min | ~96 |
 | `1w` | 1 h | ~168 |
@@ -275,13 +275,13 @@ Returns a plain-text response if the server is up.
 | Setting | Where | Default |
 |---|---|---|
 | Server port | `PORT` environment variable | `3001` |
-| Posting interval | `time.sleep(...)` at the end of `ESP/main.py` | 2 s |
+| Posting interval | `INTERVAL_MS` in `ESP/main.py` | 60 s |
 | Server address | `SERVER_URL` in `ESP/main.py` | — |
 | Sensor pin | `dht.DHT22(Pin(4))` in `ESP/main.py` | GPIO 4 |
 
 If you change the port, update `SERVER_URL` to match.
 
-**On the posting interval:** 2 seconds is far more often than room temperature changes. If you run the server on a Raspberry Pi or similar board with an SD card, raise it to 30–60 s — it cuts database writes 15–30× and greatly extends the card's life.
+**On the posting interval:** room temperature changes slowly, so one reading a minute keeps the shape of every chart while keeping database writes low (about 1,440 a day). If you change it, also update `SEND_INTERVAL_MS` in `WebServer/client/config.ts`. The dashboard uses it to decide when the sensor counts as delayed, and how long a gap between readings must be before the charts show a break.
 
 ## Project structure
 
@@ -334,7 +334,7 @@ Design decisions and the reasoning behind them are recorded in [NOTES.md](NOTES.
 | Every sensor read fails with `OSError` | Wrong pin, a GPIO 34–39 pin, 5 V instead of 3.3 V, or a missing pull-up on a bare sensor. Occasional failures are normal — the loop skips them. |
 | `EADDRINUSE: address already in use` | Another server is already running on that port, often a terminal you forgot. Stop it with `Ctrl+C`, or on Windows: `Stop-Process -Id (Get-NetTCPConnection -LocalPort 3001).OwningProcess` |
 | No serial port in `mpremote connect list` | Missing USB-serial driver (CH340/CP2102), or a charge-only USB cable. |
-| Dashboard shows "Offline" or "Delayed" | No reading has arrived for over 5 minutes ("Offline") or 30 seconds ("Delayed") — the ESP32 is unpowered, off WiFi, or can't reach the server. |
+| Dashboard shows "Offline" or "Delayed" | No reading has arrived for over 5 minutes ("Offline") or 90 seconds ("Delayed", one missed reading) — the ESP32 is unpowered, off WiFi, or can't reach the server. |
 | Breaks in the chart lines | Times when no readings arrived — the sensor was off, or the server wasn't running. The footer's coverage percentage shows how much of the range has data. |
 | Charts look unstyled or use a different font | The page loads Chart.js and its font from the internet. Without internet access the charts won't draw; the font falls back to your system font. |
 | VS Code underlines `machine`, `dht`, `network` | Editor-only, doesn't affect the device. Run `pip install micropython-esp32-stubs` and add that package's site-packages directory to `python.analysis.extraPaths`. |

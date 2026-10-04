@@ -1,6 +1,16 @@
 import type { Metric, MetricKey, RangeKey } from "./types.js";
 
-export const POLL_MS = 5000;
+// How often the ESP32 posts a reading (INTERVAL_MS in ESP/main.py).
+export const SEND_INTERVAL_MS = 60_000;
+
+// New data only arrives once a minute; polling faster just repeats requests.
+export const POLL_MS = 15_000;
+
+// The server timestamps readings on arrival, so network jitter can push a
+// reading into the next one-minute bucket and leave one empty even though
+// nothing was missed. Gaps between readings up to this long are drawn as a
+// continuous line; anything longer is a real outage and shows as a gap.
+export const BRIDGE_MS = 2.5 * SEND_INTERVAL_MS;
 
 export const RANGE_TEXT: Record<RangeKey, string> = {
     "15m": "the last 15 minutes",

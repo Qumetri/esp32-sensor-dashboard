@@ -19,6 +19,8 @@ export interface Point {
 export interface EmptyPoint {
     t: number;
     empty: true;
+    /** Interpolated values for a jitter-sized gap (see BRIDGE_MS), drawn but never reported. */
+    bridge?: Point;
 }
 
 export type GridPoint = Point | EmptyPoint;

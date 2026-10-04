@@ -41,9 +41,11 @@ const ReadingInput = z.object({
 
 // Each range picks a bucket size that lands on ~60-170 points. Enough detail to
 // read the shape, few enough that the browser isn't drawing thousands of points
-// it can't physically display on a ~900px-wide canvas.
+// it can't physically display on a ~900px-wide canvas. The exception is 15m:
+// the ESP32 posts once a minute, so a bucket smaller than that would mostly be
+// empty — it gets 15 one-minute points instead.
 const RANGES = {
-    "15m": { ms: 15 * 60_000, bucketMs: 15_000, label: "15 minutes" },
+    "15m": { ms: 15 * 60_000, bucketMs: 60_000, label: "15 minutes" },
     "1h": { ms: 60 * 60_000, bucketMs: 60_000, label: "1 hour" },
     "1d": { ms: 24 * 60 * 60_000, bucketMs: 15 * 60_000, label: "24 hours" },
     "1w": { ms: 7 * 24 * 60 * 60_000, bucketMs: 60 * 60_000, label: "7 days" },
