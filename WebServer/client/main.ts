@@ -9,7 +9,9 @@ import type { RangeKey, Series } from "./types.js";
 async function refresh(): Promise<void> {
     const asked = state.range;
     try {
-        const res = await fetch("/api/series?range=" + asked);
+        // Relative, not "/api/...": the page may be served under a path prefix
+        // (e.g. behind a reverse proxy at https://example.com/sensor/).
+        const res = await fetch("api/series?range=" + asked);
         if (!res.ok) throw new Error("the server answered " + res.status);
         const d = await res.json() as Series;
         if (asked !== state.range) return; // a newer range was picked meanwhile

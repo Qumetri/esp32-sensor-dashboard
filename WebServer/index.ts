@@ -1,5 +1,6 @@
 import express from "express";
 import os from "node:os"
+import { createHash, timingSafeEqual } from "node:crypto"
 import {
     addReading,
     getReadings,
@@ -13,6 +14,11 @@ import {
 import z from "zod"
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
+
+// Shared secret the ESP32 sends in the X-Sensor-Token header. Unset means
+// anyone who can reach the server may post — fine on a home network, not once
+// the server is reachable from the internet.
+const SENSOR_TOKEN = process.env.SENSOR_TOKEN ?? ""
 
 app.use(express.json())
 app.use(express.static("WebServer/public"))
@@ -74,7 +80,20 @@ app.get("/health", (req, res) => {
     res.send("Meow! I'm healthy and thriving.")
 })
 
+/** Compares hashes rather than the strings, so neither the comparison time nor
+ * a length mismatch says anything about how much of a guess was right. */
+function tokenMatches(sent: unknown): boolean {
+    if (typeof sent !== "string") return false
+    const digest = (v: string) => createHash("sha256").update(v).digest()
+    return timingSafeEqual(digest(sent), digest(SENSOR_TOKEN))
+}
+
 app.post("/api/readings", (req, res) => {
+    if (SENSOR_TOKEN && !tokenMatches(req.get("X-Sensor-Token"))) {
+        res.status(401).json({ error: "missing or wrong X-Sensor-Token" })
+        return
+    }
+
     const parsed = ReadingInput.safeParse(req.body)
 
     if (!parsed.success) {
@@ -171,5 +190,6 @@ app.listen(PORT, () => {
         console.log(`  Network:  http://${addr}:${PORT}  (use this in the ESP32's SERVER_URL)`)
     }
     console.log(`  Health:   http://localhost:${PORT}/health`)
+    console.log(`  Posting:  ${SENSOR_TOKEN ? "needs the X-Sensor-Token header" : "open to anyone (SENSOR_TOKEN is not set)"}`)
     console.log(`  Started:  ${new Date().toLocaleString()}\n`)
 })

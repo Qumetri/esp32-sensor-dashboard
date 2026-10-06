@@ -100,7 +100,7 @@ Sensor dashboard listening on port 3001
   Health:   http://localhost:3001/health
 ```
 
-**Note the `Network` address** — the ESP32 needs it in step 7. Open `http://localhost:3001` and you'll see an empty dashboard waiting for data.
+**Note the `Network` address** — the ESP32 needs it in step 6. Open `http://localhost:3001` and you'll see an empty dashboard waiting for data.
 
 If several `Network` lines appear, the server is listing every network adapter on your machine. Pick the one on the same subnet as your router — usually `192.168.x.x` or `10.x.x.x` matching your home network. Ignore VPN adapters, virtual machine adapters (VirtualBox uses `192.168.56.x`), and `169.254.x.x` addresses, which mean an adapter with no real connection.
 
@@ -170,17 +170,9 @@ mpremote connect COM4 exec "import dht, machine; d=dht.DHT22(machine.Pin(4)); d.
 
 You should get two plausible numbers, like `22.4 47.1`. An `OSError` means a wiring problem — check the pin, the pull-up resistor, and the connections.
 
-### 6. Install the HTTP library on the device
+### 6. Configure the firmware
 
-The firmware doesn't include `urequests`. Install it from your computer — no WiFi on the device required:
-
-```bash
-mpremote connect COM4 mip install urequests
-```
-
-### 7. Configure the firmware
-
-Create your WiFi credentials file from the template:
+Create your settings file from the template:
 
 ```bash
 # Windows
@@ -189,26 +181,29 @@ copy ESP\secrets.example.py ESP\secrets.py
 cp ESP/secrets.example.py ESP/secrets.py
 ```
 
-Edit `ESP/secrets.py` with your network name and password. This file is gitignored.
+Edit `ESP/secrets.py`. This file is gitignored.
 
-Then open `ESP/main.py` and set `SERVER_URL` to the **Network** address from step 2, keeping the path:
+- `WIFI_SSID`, `WIFI_PASSWORD` — your network. The ESP32 supports 2.4 GHz only.
+- `SERVER_URL` — the **Network** address from step 2, keeping the path:
 
-```python
-SERVER_URL = "http://192.168.0.208:3001/api/readings"
-```
+  ```python
+  SERVER_URL = "http://192.168.0.208:3001/api/readings"
+  ```
 
-Use your computer's LAN address, never `localhost` — to the ESP32, `localhost` means the ESP32 itself.
+  Use your computer's LAN address, never `localhost` — to the ESP32, `localhost` means the ESP32 itself. If the server is somewhere else on the internet, see [Running on a server](#running-on-a-server).
+- `SENSOR_TOKEN` — leave empty for now. It's only needed when the server sets one.
 
-### 8. Upload and run
+### 7. Upload and run
 
-Copy both files to the device:
+Copy the files to the device:
 
 ```bash
 mpremote connect COM4 cp ESP/secrets.py :secrets.py
+mpremote connect COM4 cp ESP/ca.pem :ca.pem
 mpremote connect COM4 cp ESP/main.py :main.py
 ```
 
-Both are required — `main.py` imports `secrets.py` from the device's own filesystem, not from your computer.
+All are required — `main.py` reads `secrets.py` and `ca.pem` from the device's own filesystem, not from your computer. (`ca.pem` is only used for an `https://` server, but it's small.)
 
 Run it and watch the output:
 
@@ -222,13 +217,41 @@ Temp: 22.4C  Humidity: 47.1%
 Server responded: 201
 ```
 
-Press `Ctrl+C` to stop watching. Because `main.py` is installed on the device, it now **runs automatically on every power-up** — you can unplug the ESP32 from your computer and power it from any USB charger.
+Press `Ctrl+C` to stop watching. Because `main.py` is installed on the device, it now **runs automatically on every power-up** — you can unplug the ESP32 from your computer and power it from any USB charger. If WiFi drops, it reconnects by itself before the next reading.
 
-### 9. Open the dashboard
+### 8. Open the dashboard
 
 Go to `http://localhost:3001` — readings should appear within a few seconds, and the status in the top right should say **Live** with a green dot. Any device on your network can view it at the `Network` address.
 
 Pick a time range with the buttons above the charts. The longer ranges fill in as data builds up — a fresh install shows only a short line on the 7-day view, which is expected. Use **Dark theme** in the top right to switch themes.
+
+## Running on a server
+
+The server can run anywhere the ESP32 can reach over the internet, not only on your own network. Three things change:
+
+**1. Run it in Docker.** The repository has a `Dockerfile`:
+
+```bash
+docker build -t esp32-sensor-dashboard .
+docker run -d --name sensor -p 3001:3001 \
+  -e SENSOR_TOKEN=<long random string> \
+  -v "$PWD/WebServer/data:/app/WebServer/data" \
+  esp32-sensor-dashboard
+```
+
+The database stays in the mounted `WebServer/data` folder. The data folder must be writable by uid 1000 (the image runs as the `node` user).
+
+**2. Set a token.** Once the server is reachable from the internet, anyone could post readings. With `SENSOR_TOKEN` set, the server only accepts posts carrying the same value in an `X-Sensor-Token` header. Generate one with `openssl rand -hex 24` and put the same value in `SENSOR_TOKEN` in `ESP/secrets.py`. Viewing the dashboard doesn't need it.
+
+**3. Publish it over HTTPS** with a reverse proxy (Caddy, nginx), so the token isn't sent in the clear. The dashboard uses relative URLs, so it works under a path prefix too, e.g. `https://example.com/sensor/`. Point the ESP32 there:
+
+```python
+SERVER_URL = "https://example.com/sensor/api/readings"
+SENSOR_TOKEN = "<the same token>"
+VERIFY_TLS = True
+```
+
+With `VERIFY_TLS` on, the firmware checks the server's certificate against `ESP/ca.pem` — Let's Encrypt's root certificates — so nothing between the ESP32 and the server can pose as it and collect the token. The firmware sets its clock over the internet first, because a certificate check needs the date. For a certificate from a different authority, put that authority's root certificate in `ca.pem`.
 
 ## API
 
@@ -236,7 +259,7 @@ All endpoints are JSON.
 
 ### `POST /api/readings`
 
-Stores a reading. The server adds the timestamp — clients can't set it.
+Stores a reading. The server adds the timestamp — clients can't set it. If the server has `SENSOR_TOKEN` set, the request needs an `X-Sensor-Token` header with the same value; otherwise it gets `401`.
 
 ```json
 { "temperature": 22.4, "humidity": 47.1 }
@@ -247,7 +270,7 @@ Stores a reading. The server adds the timestamp — clients can't set it.
 | `temperature` | number, −40 to 80 |
 | `humidity` | number, 0 to 100 |
 
-Returns `201` with the stored reading, or `400` with a list of validation errors.
+Returns `201` with the stored reading, `400` with a list of validation errors, or `401` without the right token.
 
 ### `GET /api/series?range=1h`
 
@@ -275,8 +298,10 @@ Returns a plain-text response if the server is up.
 | Setting | Where | Default |
 |---|---|---|
 | Server port | `PORT` environment variable | `3001` |
+| Posting token | `SENSOR_TOKEN` environment variable, and `SENSOR_TOKEN` in `ESP/secrets.py` | none (anyone may post) |
 | Posting interval | `INTERVAL_MS` in `ESP/main.py` | 60 s |
-| Server address | `SERVER_URL` in `ESP/main.py` | — |
+| Server address | `SERVER_URL` in `ESP/secrets.py` | — |
+| Certificate check | `VERIFY_TLS` in `ESP/secrets.py`, roots in `ESP/ca.pem` | on |
 | Sensor pin | `dht.DHT22(Pin(4))` in `ESP/main.py` | GPIO 4 |
 
 If you change the port, update `SERVER_URL` to match.
@@ -288,7 +313,8 @@ If you change the port, update `SERVER_URL` to match.
 ```
 ├── ESP/
 │   ├── main.py              Firmware: WiFi, sensor loop, HTTP POST
-│   ├── secrets.example.py   Template for WiFi credentials
+│   ├── secrets.example.py   Template for WiFi, server address and token
+│   ├── ca.pem               Root certificates for checking an HTTPS server
 │   └── *.bin                MicroPython firmware for ESP32
 ├── WebServer/
 │   ├── index.ts             Express app: routes, validation, statistics
@@ -307,6 +333,7 @@ If you change the port, update `SERVER_URL` to match.
 │   │   └── js/              Compiled client code — generated, gitignored
 │   └── data/                SQLite database — created on first run, gitignored
 ├── docs/screenshots/        Images used in this README
+├── Dockerfile               Container image for the server and dashboard
 ├── NOTES.md                 Development log: decisions, gotchas, progress
 └── package.json
 ```
@@ -315,7 +342,7 @@ If you change the port, update `SERVER_URL` to match.
 
 | Layer | Choice |
 |---|---|
-| Firmware | MicroPython on ESP32, `dht`, `network`, `urequests` |
+| Firmware | MicroPython on ESP32, `dht`, `network`, `ssl` (no extra libraries) |
 | Server | Node.js 22, Express 5, TypeScript, run directly with `tsx` |
 | Validation | zod |
 | Storage | SQLite via `better-sqlite3` (raw SQL, no ORM) |
@@ -327,9 +354,10 @@ Design decisions and the reasoning behind them are recorded in [NOTES.md](NOTES.
 
 | Symptom | Cause and fix |
 |---|---|
+| `Server responded: 401` | `SENSOR_TOKEN` in `secrets.py` doesn't match the server's. |
+| `POST failed` with `X509` or `-9984` | The certificate check failed. Check the device's clock synced (`Clock sync failed` above it), and that `ca.pem` is on the device and holds the server's root certificate. Setting `VERIFY_TLS = False` tells you whether the check is the problem. |
 | `ImportError: no module named 'secrets'` | `secrets.py` isn't on the device. `mpremote run` sends only the file you name — copy `secrets.py` over with `mpremote cp` first. |
-| `ImportError: no module named 'urequests'` | Run step 6. |
-| ESP32 prints `POST failed` | Check `SERVER_URL` uses your computer's LAN IP (not `localhost`), the server is running, both devices are on the same network, and the firewall allows Node. |
+| ESP32 prints `POST failed` (other errors) | Check `SERVER_URL` uses your computer's LAN IP (not `localhost`), the server is running, both devices are on the same network, and the firewall allows Node. |
 | `WiFi connection failed` | Wrong credentials in `secrets.py`, or a 5 GHz-only network — the ESP32 supports 2.4 GHz only. |
 | Every sensor read fails with `OSError` | Wrong pin, a GPIO 34–39 pin, 5 V instead of 3.3 V, or a missing pull-up on a bare sensor. Occasional failures are normal — the loop skips them. |
 | `EADDRINUSE: address already in use` | Another server is already running on that port, often a terminal you forgot. Stop it with `Ctrl+C`, or on Windows: `Stop-Process -Id (Get-NetTCPConnection -LocalPort 3001).OwningProcess` |

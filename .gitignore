@@ -3,3 +3,4 @@ node_modules/
 ESP/secrets.py
 WebServer/data/
 WebServer/public/js/
+__pycache__/

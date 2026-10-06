@@ -55,6 +55,8 @@ Check items off here as they're done. Keep this in sync each session.
 - [x] **Step 6b** — Split `db` into its own module, keep `index.ts` thin
 - [x] **Step 8a** — zod validation on the POST body
 - [ ] **Step 8b** — env config: port + DB path via `node --env-file=.env` (no dotenv dep needed on Node 22)
+      *(port and `SENSOR_TOKEN` come from the environment now; DB path still fixed)*
+- [x] **Server on the internet** — Docker image, posting token, HTTPS with a certificate check in the firmware
 - [ ] **Step 8c** — Prettier (format on save)
 - [ ] **Step 8d** — A few `vitest` + `supertest` route tests — mainly a safety net for the SQLite refactor
 - [x] **Step 5** — Static page → Chart.js (skipped the intermediate table stage)
@@ -635,3 +637,34 @@ in the sections above; this is just a timeline.
   - **Gotcha (headless Chrome):** with Chrome already open, `--headless
     --screenshot` silently hands off to the running browser and writes
     nothing. Needs its own `--user-data-dir`.
+- **2026-10-06** — **Moved the server off the LAN.** The ESP32 and the server
+  are now in different places, so readings travel over the internet: the
+  server runs in Docker behind a Caddy reverse proxy at a path prefix, and the
+  ESP32 posts over HTTPS.
+  - **Posting needs a token now.** `SENSOR_TOKEN` (env) must match the
+    `X-Sensor-Token` header, else `401`. Unset keeps the old open behaviour for
+    LAN use. Compared as SHA-256 digests with `timingSafeEqual`, so timing and
+    length say nothing about a guess.
+  - **`fetch("/api/series")` became `fetch("api/series")`.** Under a prefix
+    (`https://host/sensor/`) the absolute path went to the domain root. The
+    page's other URLs (`styles.css`, `js/main.js`) were already relative.
+  - **Firmware no longer uses `urequests`.** It never checks the server's
+    certificate (it hardcodes `CERT_NONE`), so a token sent through it can be
+    collected by anything posing as the server. `post()` is a hand-written
+    HTTP/1.0 request over `ssl.SSLContext` with `CERT_REQUIRED` and
+    `ESP/ca.pem` (ISRG Root YE, YR, X1, X2).
+    - Why four roots: Let's Encrypt is moving to its Gen Y hierarchy. The
+      chain served today is leaf → YE2 → Root YE (cross-signed by X2) → X2
+      (cross-signed by X1). Trusting all four keeps working when the
+      cross-signs are retired.
+    - The clock is set with `ntptime` before the first HTTPS post: a
+      certificate check compares dates, and the ESP32 boots in 2000.
+  - **WiFi reconnects by itself.** `connect_wifi()` ran once at boot, so a
+    router reboot meant no data until a power cycle. It's now called before
+    every post.
+  - `SERVER_URL` moved from `main.py` into `secrets.py`: with a prefix it
+    contains a secret path, and it differs per install.
+  - Tested on CPython with the MicroPython modules stubbed (201 with the
+    token, 401 without, a non-Let's Encrypt certificate rejected). Not yet run
+    on the real board.
+
